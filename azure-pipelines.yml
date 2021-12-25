@@ -14,15 +14,16 @@ variables:
 
     # used for post-build phases, internal builds only
   - ${{ if and(ne(variables['System.TeamProject'], 'public'), notin(variables['Build.Reason'], 'PullRequest')) }}:
-    - group: DotNet-AspNet-SDLValidation-Params
+    - group: YARP-SDLValidation-Params
 
 # CI and PR triggers
 trigger:
   batch: true
   branches:
     include:
-    - master
+    - main
     - release/*
+    - internal/release/*
 
 pr:
   autoCancel: false
@@ -47,13 +48,13 @@ stages:
       - job: Windows
         pool:
           ${{ if eq(variables['System.TeamProject'], 'public') }}:
-            name: NetCorePublic-Pool
-            queue: BuildPool.Server.Amd64.VS2019.Open
+            name: NetCore1ESPool-Public
+            demands: ImageOverride -equals Build.Windows.10.Amd64.VS2019.Pre.Open
           ${{ if ne(variables['System.TeamProject'], 'public') }}:
-            name: NetCoreInternal-Pool
-            queue: BuildPool.Server.Amd64.VS2019
+            name: NetCore1ESPool-Internal
+            demands: ImageOverride -equals Build.Windows.10.Amd64.VS2019.Pre
         variables:
-          
+
 
         # Only enable publishing in official builds.
         - ${{ if and(ne(variables['System.TeamProject'], 'public'), notin(variables['Build.Reason'], 'PullRequest')) }}:
@@ -72,7 +73,7 @@ stages:
             value: ''
           - name: _SignType
             value: test
-                
+
         steps:
         - checkout: self
           clean: true
@@ -96,14 +97,13 @@ stages:
             artifactType: Container
             parallel: true
 
-      - job: Ubuntu_16_04
-        displayName: 'Ubuntu 16.04'
+      - job: Ubuntu
         pool:
-          vmImage: ubuntu-16.04
+          vmImage: ubuntu-latest
         variables:
         - name: _SignType
           value: none
-          
+
         - ${{ if and(eq(variables['System.TeamProject'], 'internal'), notin(variables['Build.Reason'], 'PullRequest')) }}:
           - name: _OfficialBuildArgs
             value: -p:OfficialBuildId=$(Build.BuildNumber)
@@ -117,8 +117,7 @@ stages:
         - script: eng/common/cibuild.sh
             --configuration $(_BuildConfig)
             --prepareMachine
-            $(_OfficialBuildArgs)
-            /p:DotNetPublishUsingPipelines=$(_PublishUsingPipelines)
+            $(_InternalRuntimeDownloadArgs)
           displayName: Build
         - task: PublishBuildArtifacts@1
           displayName: Upload TestResults
@@ -130,10 +129,10 @@ stages:
             artifactType: Container
             parallel: true
 
-      - job: macOS_10_14
-        displayName: 'macOS 10.14'
+      - job: macOS_latest
+        displayName: 'macOS latest'
         pool:
-          vmImage: macOS-10.14
+          vmImage: macOS-latest
         variables:
         - name: _SignType
           value: none
@@ -165,11 +164,14 @@ stages:
 - ${{ if and(ne(variables['System.TeamProject'], 'public'), notin(variables['Build.Reason'], 'PullRequest')) }}:
   - template: eng\common\templates\post-build\post-build.yml
     parameters:
+      publishingInfraVersion: 3
       # Symbol validation isn't being very reliable lately. This should be enabled back
       # once this issue is resolved: https://github.com/dotnet/arcade/issues/2871
       enableSymbolValidation: false
       # It's a private repo in github so this won't pass until we create an internal mirror
       enableSourceLinkValidation: false
+      enableSigningValidation: false
+      enableNugetValidation: false
       # This is to enable SDL runs part of Post-Build Validation Stage
       SDLValidationParameters:
         enable: true
@@ -181,7 +183,7 @@ stages:
         -TsaCodebaseAdmin $(_TsaCodebaseAdmin)
         -TsaBugAreaPath $(_TsaBugAreaPath)
         -TsaIterationPath $(_TsaIterationPath)
-        -TsaRepositoryName "Tye"
-        -TsaCodebaseName "Tye"
+        -TsaRepositoryName "ReverseProxy"
+        -TsaCodebaseName "ReverseProxy"
         -TsaPublish $True
         -PoliCheckAdditionalRunConfigParams @("UserExclusionPath < $(Build.SourcesDirectory)/eng/PoliCheckExclusions.xml")'
