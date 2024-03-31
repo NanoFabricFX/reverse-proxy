@@ -54,4 +54,19 @@ internal static class EventIds
     public static readonly EventId ForwardingError = new EventId(48, "ForwardingError");
     public static readonly EventId ActiveDestinationHealthStateIsSetToUnhealthy = new EventId(49, "ActiveDestinationHealthStateIsSetToUnhealthy");
     public static readonly EventId ActiveDestinationHealthStateIsSet = new EventId(50, "ActiveDestinationHealthStateIsSet");
+    public static readonly EventId DelegationQueueInitializationFailed = new EventId(51, "DelegationQueueInitializationFailed");
+    public static readonly EventId DelegationQueueNotFound = new EventId(52, "DelegationQueueNotFound");
+    public static readonly EventId DelegationQueueNotInitialized  = new EventId(53, "DelegationQueueNotInitialized");
+    public static readonly EventId DelegatingRequest = new EventId(54, "DelegatingRequest");
+    public static readonly EventId DelegationFailed = new EventId(55, "DelegationFailed");
+    public static readonly EventId ResponseReceived = new EventId(56, "ResponseReceived");
+    public static readonly EventId DelegationQueueReset = new EventId(57, "DelegationQueueReset");
+    public static readonly EventId Http10RequestVersionDetected = new EventId(58, "Http10RequestVersionDetected");
+    public static readonly EventId NotForwarding = new EventId(59, "NotForwarding");
+    public static readonly EventId MaxRequestBodySizeSet = new EventId(60, "MaxRequestBodySizeSet");
+    public static readonly EventId RetryingWebSocketDowngradeNoConnect = new EventId(61, "RetryingWebSocketDowngradeNoConnect");
+    public static readonly EventId RetryingWebSocketDowngradeNoHttp2 = new EventId(62, "RetryingWebSocketDowngradeNoHttp2");
+    public static readonly EventId InvalidSecWebSocketKeyHeader = new EventId(63, "InvalidSecWebSocketKeyHeader");
+    public static readonly EventId TimeoutNotApplied = new(64, nameof(TimeoutNotApplied));
+    public static readonly EventId DelegationQueueNoLongerExists = new(65, nameof(DelegationQueueNoLongerExists));
 }

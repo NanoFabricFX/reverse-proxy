@@ -3,6 +3,9 @@
 
 using System;
 using System.Threading.Tasks;
+using Microsoft.Net.Http.Headers;
+using Yarp.ReverseProxy.Forwarder;
+using Yarp.ReverseProxy.Model;
 
 namespace Yarp.ReverseProxy.Transforms;
 
@@ -29,20 +32,25 @@ public class RequestHeaderOriginalHostTransform : RequestTransform
 
     public override ValueTask ApplyAsync(RequestTransformContext context)
     {
+        var destinationConfigHost = context.HttpContext.Features.Get<IReverseProxyFeature>()?.ProxiedDestination?.Model.Config?.Host;
+        var originalHost = context.HttpContext.Request.Host.Value is { Length: > 0 } host ? host : null;
+        var existingHost = RequestUtilities.TryGetValues(context.ProxyRequest.Headers, HeaderNames.Host, out var currentHost) ? currentHost.ToString() : null;
+
         if (UseOriginalHost)
         {
-            if (!context.HeadersCopied)
+            if (!context.HeadersCopied && existingHost is null)
             {
-                // Don't override a custom host
-                context.ProxyRequest.Headers.Host ??= context.HttpContext.Request.Host.Value;
+                // Propagate the host if the transform pipeline didn't already override it.
+                // If there was no original host specified, allow the destination config host to flow through.
+                context.ProxyRequest.Headers.TryAddWithoutValidation(HeaderNames.Host, originalHost ?? destinationConfigHost);
             }
         }
-        else if (context.HeadersCopied
-            // Don't remove a custom host, only the original
-            && string.Equals(context.HttpContext.Request.Host.Value, context.ProxyRequest.Headers.Host, StringComparison.Ordinal))
+        else if (existingHost is null || string.Equals(originalHost, existingHost, StringComparison.Ordinal))
         {
-            // Remove it after the copy, use the destination host instead.
-            context.ProxyRequest.Headers.Host = null;
+            // Use the host from destination configuration (which may be null) if either:
+            // * there is no host header set, or
+            // * the original host header is being suppressed and has not been modified by the transform pipeline
+            context.ProxyRequest.Headers.Host = destinationConfigHost;
         }
 
         return default;

@@ -2,15 +2,16 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 
 namespace Yarp.ReverseProxy.Utilities;
 
 internal static class ServiceLookupHelper
 {
-    public static IDictionary<string, T> ToDictionaryByUniqueId<T>(this IEnumerable<T> services, Func<T, string> idSelector)
+    public static FrozenDictionary<string, T> ToDictionaryByUniqueId<T>(this IEnumerable<T> services, Func<T, string> idSelector)
     {
-        if (services == null)
+        if (services is null)
         {
             throw new ArgumentNullException(nameof(services));
         }
@@ -25,10 +26,10 @@ internal static class ServiceLookupHelper
             }
         }
 
-        return result;
+        return result.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
     }
 
-    public static T GetRequiredServiceById<T>(this IDictionary<string, T> services, string? id, string defaultId)
+    public static T GetRequiredServiceById<T>(this FrozenDictionary<string, T> services, string? id, string defaultId)
     {
         var lookup = id;
         if (string.IsNullOrEmpty(lookup))

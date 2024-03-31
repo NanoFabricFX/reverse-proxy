@@ -28,7 +28,7 @@ internal sealed class TransportFailureRateHealthPolicy : IPassiveHealthCheckPoli
     private static readonly TimeSpan _defaultReactivationPeriod = TimeSpan.FromSeconds(60);
     private readonly IDestinationHealthUpdater _healthUpdater;
     private readonly TransportFailureRateHealthPolicyOptions _policyOptions;
-    private readonly IClock _clock;
+    private readonly TimeProvider _timeProvider;
     private readonly ConditionalWeakTable<ClusterState, ParsedMetadataEntry<double>> _clusterFailureRateLimits = new ConditionalWeakTable<ClusterState, ParsedMetadataEntry<double>>();
     private readonly ConditionalWeakTable<DestinationState, ProxiedRequestHistory> _requestHistories = new ConditionalWeakTable<DestinationState, ProxiedRequestHistory>();
 
@@ -36,18 +36,17 @@ internal sealed class TransportFailureRateHealthPolicy : IPassiveHealthCheckPoli
 
     public TransportFailureRateHealthPolicy(
         IOptions<TransportFailureRateHealthPolicyOptions> policyOptions,
-        IClock clock,
+        TimeProvider timeProvider,
         IDestinationHealthUpdater healthUpdater)
     {
-        _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         _policyOptions = policyOptions?.Value ?? throw new ArgumentNullException(nameof(policyOptions));
         _healthUpdater = healthUpdater ?? throw new ArgumentNullException(nameof(healthUpdater));
     }
 
     public void RequestProxied(HttpContext context, ClusterState cluster, DestinationState destination)
     {
-        var error = context.Features.Get<IForwarderErrorFeature>();
-        var newHealth = EvaluateProxiedRequest(cluster, destination, error != null);
+        var newHealth = EvaluateProxiedRequest(cluster, destination, DetermineIfDestinationFailed(context));
         var clusterReactivationPeriod = cluster.Model.Config.HealthCheck?.Passive?.ReactivationPeriod ?? _defaultReactivationPeriod;
         // Avoid reactivating until the history has expired so that it does not affect future health assessments.
         var reactivationPeriod = clusterReactivationPeriod >= _policyOptions.DetectionWindowSize ? clusterReactivationPeriod : _policyOptions.DetectionWindowSize;
@@ -62,8 +61,8 @@ internal sealed class TransportFailureRateHealthPolicy : IPassiveHealthCheckPoli
         lock (history)
         {
             var failureRate = history.AddNew(
-                _clock.TickCount,
-                (long)_policyOptions.DetectionWindowSize.TotalMilliseconds,
+                _timeProvider,
+                _policyOptions.DetectionWindowSize,
                 _policyOptions.MinimalTotalCountThreshold,
                 failed);
             return failureRate < rateLimit ? DestinationHealth.Healthy : DestinationHealth.Unhealthy;
@@ -75,9 +74,32 @@ internal sealed class TransportFailureRateHealthPolicy : IPassiveHealthCheckPoli
         return double.TryParse(stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out parsedValue);
     }
 
+    private static bool DetermineIfDestinationFailed(HttpContext context)
+    {
+        var errorFeature = context.Features.Get<IForwarderErrorFeature>();
+        if (errorFeature is null)
+        {
+            return false;
+        }
+
+        if (context.RequestAborted.IsCancellationRequested)
+        {
+            // The client disconnected/canceled the request - the failure may not be the destination's fault
+            return false;
+        }
+
+        var error = errorFeature.Error;
+
+        return error == ForwarderError.Request
+            || error == ForwarderError.RequestTimedOut
+            || error == ForwarderError.RequestBodyDestination
+            || error == ForwarderError.ResponseBodyDestination
+            || error == ForwarderError.UpgradeRequestDestination
+            || error == ForwarderError.UpgradeResponseDestination;
+    }
+
     private class ProxiedRequestHistory
     {
-        private const long RecordWindowSize = 1000;
         private long _nextRecordCreatedAt;
         private long _nextRecordTotalCount;
         private long _nextRecordFailedCount;
@@ -85,12 +107,14 @@ internal sealed class TransportFailureRateHealthPolicy : IPassiveHealthCheckPoli
         private double _totalCount;
         private readonly Queue<HistoryRecord> _records = new Queue<HistoryRecord>();
 
-        public double AddNew(long eventTime, long detectionWindowSize, int totalCountThreshold, bool failed)
+        public double AddNew(TimeProvider timeProvider, TimeSpan detectionWindowSize, int totalCountThreshold, bool failed)
         {
+            var eventTime = timeProvider.GetTimestamp();
+            var detectionWindowSizeLong = detectionWindowSize.TotalSeconds * timeProvider.TimestampFrequency;
             if (_nextRecordCreatedAt == 0)
             {
                 // Initialization.
-                _nextRecordCreatedAt = eventTime + RecordWindowSize;
+                _nextRecordCreatedAt = eventTime + timeProvider.TimestampFrequency;
             }
 
             // Don't create a new record on each event because it can negatively affect performance.
@@ -99,7 +123,7 @@ internal sealed class TransportFailureRateHealthPolicy : IPassiveHealthCheckPoli
             if (eventTime >= _nextRecordCreatedAt)
             {
                 _records.Enqueue(new HistoryRecord(_nextRecordCreatedAt, _nextRecordTotalCount, _nextRecordFailedCount));
-                _nextRecordCreatedAt = eventTime + RecordWindowSize;
+                _nextRecordCreatedAt = eventTime + timeProvider.TimestampFrequency;
                 _nextRecordTotalCount = 0;
                 _nextRecordFailedCount = 0;
             }
@@ -112,7 +136,7 @@ internal sealed class TransportFailureRateHealthPolicy : IPassiveHealthCheckPoli
                 _nextRecordFailedCount++;
             }
 
-            while (_records.Count > 0 && (eventTime - _records.Peek().RecordedAt > detectionWindowSize))
+            while (_records.Count > 0 && (eventTime - _records.Peek().RecordedAt > detectionWindowSizeLong))
             {
                 var removed = _records.Dequeue();
                 _failedCount -= removed.FailedCount;

@@ -79,13 +79,12 @@ public class RequestHeaderForwardedTransform : RequestTransform
 
     private string GetHeaderValue(HttpContext httpContext)
     {
-        var builder = new ValueStringBuilder();
+        var builder = new ValueStringBuilder(stackalloc char[ValueStringBuilder.StackallocThreshold]);
         AppendProto(httpContext, ref builder);
         AppendHost(httpContext, ref builder);
         AppendFor(httpContext, ref builder);
         AppendBy(httpContext, ref builder);
-        var value = builder.ToString();
-        return value;
+        return builder.ToString();
     }
 
     private void AppendProto(HttpContext context, ref ValueStringBuilder builder)
@@ -148,7 +147,7 @@ public class RequestHeaderForwardedTransform : RequestTransform
         var addPort = port != 0 && (format == NodeFormat.IpAndPort || format == NodeFormat.UnknownAndPort || format == NodeFormat.RandomAndPort);
         var addRandomPort = (format == NodeFormat.IpAndRandomPort || format == NodeFormat.UnknownAndRandomPort || format == NodeFormat.RandomAndRandomPort);
         var ipv6 = (format == NodeFormat.Ip || format == NodeFormat.IpAndPort || format == NodeFormat.IpAndRandomPort)
-            && ipAddress != null && ipAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6;
+            && ipAddress is not null && ipAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6;
         var quote = addPort || addRandomPort || ipv6;
 
         if (quote)
@@ -161,7 +160,7 @@ public class RequestHeaderForwardedTransform : RequestTransform
             case NodeFormat.Ip:
             case NodeFormat.IpAndPort:
             case NodeFormat.IpAndRandomPort:
-                if (ipAddress != null)
+                if (ipAddress is not null)
                 {
                     if (ipv6)
                     {

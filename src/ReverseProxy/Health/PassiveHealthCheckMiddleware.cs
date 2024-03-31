@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
@@ -12,7 +13,7 @@ namespace Yarp.ReverseProxy.Health;
 public class PassiveHealthCheckMiddleware
 {
     private readonly RequestDelegate _next;
-    private readonly IDictionary<string, IPassiveHealthCheckPolicy> _policies;
+    private readonly FrozenDictionary<string, IPassiveHealthCheckPolicy> _policies;
 
     public PassiveHealthCheckMiddleware(RequestDelegate next, IEnumerable<IPassiveHealthCheckPolicy> policies)
     {
@@ -28,7 +29,7 @@ public class PassiveHealthCheckMiddleware
         var options = proxyFeature.Cluster.Config.HealthCheck?.Passive;
 
         // Do nothing if no target destination has been chosen for the request.
-        if (options == null || !options.Enabled.GetValueOrDefault() || proxyFeature.ProxiedDestination == null)
+        if (options is null || !options.Enabled.GetValueOrDefault() || proxyFeature.ProxiedDestination is null)
         {
             return;
         }

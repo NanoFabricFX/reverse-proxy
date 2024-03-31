@@ -1,6 +1,6 @@
 [
   {
-    "RouteId": "minimal-ingress:/foo",
+    "RouteId": "minimal-ingress.default:/foo",
     "Match": {
       "Methods": null,
       "Hosts": [],
@@ -9,8 +9,9 @@
       "QueryParameters": null
     },
     "Order": null,
-    "ClusterId": "frontend:443",
+    "ClusterId": "frontend.default:443",
     "AuthorizationPolicy": null,
+    "RateLimiterPolicy": null,
     "CorsPolicy": null,
     "Metadata": null,
     "Transforms": null

@@ -38,6 +38,18 @@ public class HttpController : ControllerBase
     }
 
     /// <summary>
+    /// Returns a 409 response without consuming the request body.
+    /// This is used to exercise <c>Expect:100-continue</c> behavior.
+    /// </summary>
+    [HttpGet]
+    [Route("/api/slow")]
+    public async Task<IActionResult> Slow()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        return StatusCode(StatusCodes.Status200OK);
+    }
+
+    /// <summary>
     /// Returns a 200 response dumping all info from the incoming request.
     /// </summary>
     [HttpGet, HttpPost]
@@ -80,7 +92,7 @@ public class HttpController : ControllerBase
     {
         foreach (var (key, value) in headers)
         {
-            Response.Headers.Add(key, value);
+            Response.Headers.Append(key, value);
         }
     }
 
@@ -96,7 +108,7 @@ public class HttpController : ControllerBase
     public async Task Stress([FromQuery] int delay, [FromQuery] int responseSize)
     {
         var bodyReader = Request.BodyReader;
-        if (bodyReader != null)
+        if (bodyReader is not null)
         {
             while (true)
             {
@@ -114,7 +126,7 @@ public class HttpController : ControllerBase
         }
 
         var bodyWriter = Response.BodyWriter;
-        if (bodyWriter != null && responseSize > 0)
+        if (bodyWriter is not null && responseSize > 0)
         {
             const int WriteBufferSize = 4096;
 

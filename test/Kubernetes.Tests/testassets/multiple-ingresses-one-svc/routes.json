@@ -1,6 +1,6 @@
 [
   {
-    "RouteId": "repro-1-ingress:/",
+    "RouteId": "repro-1-ingress.foo:subdomain1.example.com/",
     "Match": {
       "Methods": null,
       "Hosts": [ "subdomain1.example.com" ],
@@ -9,14 +9,15 @@
       "QueryParameters": null
     },
     "Order": null,
-    "ClusterId": "repro-service:http",
+    "ClusterId": "repro-service.foo:http",
     "AuthorizationPolicy": null,
+    "RateLimiterPolicy": null,
     "CorsPolicy": null,
     "Metadata": null,
     "Transforms": null
   },
   {
-    "RouteId": "repro-2-ingress:/",
+    "RouteId": "repro-2-ingress.foo:subdomain2.example.com/",
     "Match": {
       "Methods": null,
       "Hosts": [ "subdomain2.example.com" ],
@@ -25,8 +26,9 @@
       "QueryParameters": null
     },
     "Order": null,
-    "ClusterId": "repro-service:http",
+    "ClusterId": "repro-service.foo:http",
     "AuthorizationPolicy": null,
+    "RateLimiterPolicy": null,
     "CorsPolicy": null,
     "Metadata": null,
     "Transforms": null

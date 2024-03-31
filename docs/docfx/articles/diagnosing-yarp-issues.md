@@ -3,8 +3,7 @@
 When using a reverse proxy, there is an additional hop from the client to the proxy, and then from the proxy to destination for things to go wrong. This topic should provide some hints and tips for how to debug and diagnose issues when they occur. It assumes that the proxy is already running, and so does not include problems at startup such as configuration errors.
 
 ## Logging
-
-The first step to being able to tell what is going on with YARP is to turn on [logging](Link to https://docs.microsoft.com/aspnet/core/fundamentals/logging/#configure-logging-1). This is a configuration flag so can be changed on the fly. YARP is implemented as a middleware component for ASP.NET Core, so you need to enable logging for both YARP and ASP.NET to get the complete picture of what is going on.
+The first step to being able to tell what is going on with YARP is to turn on [logging](https://docs.microsoft.com/aspnet/core/fundamentals/logging/#configure-logging). This is a configuration flag so can be changed on the fly. YARP is implemented as a middleware component for ASP.NET Core, so you need to enable logging for both YARP and ASP.NET to get the complete picture of what is going on.
 
 By default ASP.NET will log to the console, and the configuration file can be used to control the level of logging.
 
@@ -21,7 +20,9 @@ By default ASP.NET will log to the console, and the configuration file can be us
   },
 ```
 
-You want logging infomation from the "Microsoft.AspNetCore.*" and "Yarp.ReverseProxy.*" providers. The example above will emit "Information" level events from both providers to the Console. Changing the level to "Debug" will show additional entries. ASP.NET implements change detection for configuration files, so you can edit the appsettings.json file (or appsettings.development.json if running from Visual Studio) while the project is running and observe changes to the log output.
+You want logging infomation from the "Microsoft.AspNetCore.\*" and "Yarp.ReverseProxy.\*" providers. The example above will emit "Information" level events from both providers to the Console. Changing the level to "Debug" will show additional entries. ASP.NET implements change detection for configuration files, so you can edit the appsettings.json file (or appsettings.development.json if running from Visual Studio) while the project is running and observe changes to the log output.
+
+> Note: Settings in the appsettings.development.json file will override settings in appsettings.json when running in development, so make sure that if you are editing appsettings.json that the values are not overridden.
 
 ### Understanding Log entries
 
@@ -48,24 +49,16 @@ The logging output is directly tied to the way that ASP.NET Core processes reque
 
 The above gives general information about the request and how it was processed.
 
-### Using ASP.NET 6 Request Logging
+### Using ASP.NET Request Logging
 
-If running on .NET 6, then ASP.NET includes an additional middleware component that can be used to provide more details about the request and response. The `UseHttpLogging` component can be added to the request pipeline. It will add additional entries to the log detailing the incoming and outgoing request headers.
+ASP.NET includes a middleware component that can be used to provide more details about the request and response. The `UseHttpLogging` component can be added to the request pipeline. It will add additional entries to the log detailing the incoming and outgoing request headers.
 
 ``` C#
-// This method gets called by the runtime. Use this method to configure the HTTP request 
-// pipeline that handles requests
-public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
-{
-    app.UseHttpLogging();
-    // Enable endpoint routing, required for the reverse proxy
-    app.UseRouting();
-    // Register the reverse proxy routes
-    app.UseEndpoints(endpoints =>
-    {
-        endpoints.MapReverseProxy();
-    });
-}
+app.UseHttpLogging();
+// Enable endpoint routing, required for the reverse proxy
+app.UseRouting();
+// Register the reverse proxy routes
+app.MapReverseProxy();
 ```
 
 For example:
@@ -99,73 +92,71 @@ info: Microsoft.AspNetCore.HttpLogging.HttpLoggingMiddleware[2]
 
 ## Using Telemetry Events
 
+We recommend reading https://learn.microsoft.com/dotnet/fundamentals/networking/networking-telemetry as a primer on how to consume networking telemetry in .NET.
+
 The [Metrics sample](https://github.com/microsoft/reverse-proxy/tree/main/samples/ReverseProxy.Metrics.Sample) shows how to listen to events from the different providers that collect telemetry as part of YARP. The most important from a diagnostics perspective are:
 
-* ForwarderTelemetryConsumer
-* HttpClientTelemetryConsumer
+* `ForwarderTelemetryConsumer`
+* `HttpClientTelemetryConsumer`
 
-To use either of these you create a class implementing an interface, such as IForwarderTelemetryConsumer:
+To use either of these you create a class implementing a [telemetry interface](https://microsoft.github.io/reverse-proxy/api/Yarp.Telemetry.Consumption.html#interfaces), such as [`IForwarderTelemetryConsumer`](https://github.com/microsoft/reverse-proxy/blob/release/latest/src/TelemetryConsumption/Forwarder/IForwarderTelemetryConsumer.cs):
 
 ```C#
 public class ForwarderTelemetry : IForwarderTelemetryConsumer
 {
+    /// Called before forwarding a request.
+    public void OnForwarderStart(DateTime timestamp, string destinationPrefix)
+    {
+        Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnForwarderStart :: Destination prefix: {destinationPrefix}");
+    }
 
-      /// Called before forwarding a request.
-      public void OnForwarderStart(DateTime timestamp, string destinationPrefix)
-      {
-            Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnForwarderStart :: Destination prefix: {destinationPrefix}");
-      }
+    /// Called after forwarding a request.
+    public void OnForwarderStop(DateTime timestamp, int statusCode)
+    {
+        Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnForwarderStop :: Status: {statusCode}");
+    }
 
-      /// Called after forwarding a request.
-      public void OnForwarderStop(DateTime timestamp, int statusCode)
-      {
-            Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnForwarderStop :: Status: {statusCode}");
-      }
+    /// Called before <see cref="OnForwarderStop(DateTime, int)"/> if forwarding the request failed.
+    public void OnForwarderFailed(DateTime timestamp, ForwarderError error)
+    {
+        Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnForwarderFailed :: Error: {error.ToString()}");
+    }
 
-      /// Called before <see cref="OnForwarderStop(DateTime, int)"/> if forwarding the request failed.
-      public void OnForwarderFailed(DateTime timestamp, ForwarderError error)
-      {
-            Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnForwarderFailed :: Error: {error.ToString()}");
-      }
+    /// Called when reaching a given stage of forwarding a request.
+    public void OnForwarderStage(DateTime timestamp, ForwarderStage stage)
+    {
+        Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnForwarderStage :: Stage: {stage.ToString()}");
+    }
 
-      /// Called when reaching a given stage of forwarding a request.
-      public void OnForwarderStage(DateTime timestamp, ForwarderStage stage)
-      {
-            Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnForwarderStage :: Stage: {stage.ToString()}");
-      }
+    /// Called periodically while a content transfer is active.
+    public void OnContentTransferring(DateTime timestamp, bool isRequest, long contentLength, long iops, TimeSpan readTime, TimeSpan writeTime)
+    {
+        Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnContentTransferring :: Is request: {isRequest}, Content length: {contentLength}, IOps: {iops}, Read time: {readTime:s\\.fff}, Write time: {writeTime:s\\.fff}");
+    }
 
-      /// Called periodically while a content transfer is active.
-      public void OnContentTransferring(DateTime timestamp, bool isRequest, long contentLength, long iops, TimeSpan readTime, TimeSpan writeTime)
-      {
-            Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnContentTransferring :: Is request: {isRequest}, Content length: {contentLength}, IOps: {iops}, Read time: {readTime:s\\.fff}, Write time: {writeTime:s\\.fff}");
-      }
+    /// Called after transferring the request or response content.
+    public void OnContentTransferred(DateTime timestamp, bool isRequest, long contentLength, long iops, TimeSpan readTime, TimeSpan writeTime, TimeSpan firstReadTime)
+    {
+        Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnContentTransferred :: Is request: {isRequest}, Content length: {contentLength}, IOps: {iops}, Read time: {readTime:s\\.fff}, Write time: {writeTime:s\\.fff}");
+    }
 
-        /// Called after transferring the request or response content.
-      public void OnContentTransferred(DateTime timestamp, bool isRequest, long contentLength, long iops, TimeSpan readTime, TimeSpan writeTime, TimeSpan firstReadTime)
-      {
-            Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnContentTransferred :: Is request: {isRequest}, Content length: {contentLength}, IOps: {iops}, Read time: {readTime:s\\.fff}, Write time: {writeTime:s\\.fff}");
-      }
-
-      /// Called before forwarding a request.
-      public void OnForwarderInvoke(DateTime timestamp, string clusterId, string routeId, string destinationId)
-      {
-            Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnForwarderInvoke:: Cluster id: {clusterId}, Route Id: { routeId}, Destination: {destinationId}");
-      }
+    /// Called before forwarding a request from `ForwarderMiddleware`, therefore is not called for direct forwarding scenarios.
+    public void OnForwarderInvoke(DateTime timestamp, string clusterId, string routeId, string destinationId)
+    {
+        Console.WriteLine($"Forwarder Telemetry [{timestamp:HH:mm:ss.fff}] => OnForwarderInvoke:: Cluster id: {clusterId}, Route Id: { routeId}, Destination: {destinationId}");
+    }
 }
 ```
 
-And then register the class as part of `Configure Services`, for example:
+And then register the class as part of services, for example:
 
 ```C#
-public void ConfigureServices(IServiceCollection services)
-{
-      services.AddTelemetryConsumer<ForwarderTelemetry>();
+services.AddTelemetryConsumer<ForwarderTelemetry>();
 
-      // Add the reverse proxy to capability to the server
-      var proxyBuilder = services.AddReverseProxy();
-      // Initialize the reverse proxy from the "ReverseProxy" section of configuration
-      proxyBuilder.LoadFromConfig(Configuration.GetSection("ReverseProxy"));
-}
+// Add the reverse proxy to capability to the server
+var proxyBuilder = services.AddReverseProxy();
+// Initialize the reverse proxy from the "ReverseProxy" section of configuration
+proxyBuilder.LoadFromConfig(Configuration.GetSection("ReverseProxy"));
 ```
 
 Then you will log details on each part of the request, for example:
@@ -182,22 +173,18 @@ Forwarder Telemetry [06:41:03.655] => OnForwarderStop :: Status: 200
 The events for Telemetry are fired as they occur, so you can [fish out the HttpContext](https://docs.microsoft.com/aspnet/core/fundamentals/http-context#use-httpcontext-from-custom-components) and the YARP feature from it:
 
 ``` C#
-public void ConfigureServices(IServiceCollection services)
-{
-      services.AddTelemetryConsumer<ForwarderTelemetry>();
-      services.AddHttpContextAccessor();
-      ...
-}
-
+services.AddTelemetryConsumer<ForwarderTelemetry>();
+services.AddHttpContextAccessor();
+...
 public void OnForwarderInvoke(DateTime timestamp, string clusterId, string routeId, string destinationId)
 {
-      var context = new HttpContextAccessor().HttpContext;
-      var YarpFeature = context.GetReverseProxyFeature();
+    var context = new HttpContextAccessor().HttpContext;
+    var YarpFeature = context.GetReverseProxyFeature();
 
-      var dests = from d in YarpFeature.AvailableDestinations
-            select d.Model.Config.Address;
+    var dests = from d in YarpFeature.AvailableDestinations
+        select d.Model.Config.Address;
 
-      Console.WriteLine($"Destinations: {string.Join(", ", dests)}");
+    Console.WriteLine($"Destinations: {string.Join(", ", dests)}");
 }
 ```
 
@@ -206,37 +193,30 @@ public void OnForwarderInvoke(DateTime timestamp, string clusterId, string route
 Another way to inspect the state for requests is to insert additional middleware into the request pipeline. You can insert between the other stages to see the state of the request.
 
 ```C#
-public void Configure(IApplicationBuilder app)
+// We can customize the proxy pipeline and add/remove/replace steps
+app.MapReverseProxy(proxyPipeline =>
 {
-      app.UseRouting();
-      app.UseEndpoints(endpoints =>
-      {
-            // We can customize the proxy pipeline and add/remove/replace steps
-            endpoints.MapReverseProxy(proxyPipeline =>
-            {
-                  // Use a custom proxy middleware, defined below
-                  proxyPipeline.Use(MyCustomProxyStep);
-                  // Don't forget to include these two middleware when you make a custom proxy pipeline (if you need them).
-                  proxyPipeline.UseSessionAffinity();
-                  proxyPipeline.UseLoadBalancing();
-            });
-      });
-}
-
+    // Use a custom proxy middleware, defined below
+    proxyPipeline.Use(MyCustomProxyStep);
+    // Don't forget to include these two middleware when you make a custom proxy pipeline (if you need them).
+    proxyPipeline.UseSessionAffinity();
+    proxyPipeline.UseLoadBalancing();
+});
+...
 public Task MyCustomProxyStep(HttpContext context, Func<Task> next)
 {
-      // Can read data from the request via the context
-      foreach (var header in context.Request.Headers)
-      {
-            Console.WriteLine($"{header.Key}: {header.Value}");
-      }
+    // Can read data from the request via the context
+    foreach (var header in context.Request.Headers)
+    {
+        Console.WriteLine($"{header.Key}: {header.Value}");
+    }
 
-      // The context also stores a ReverseProxyFeature which holds proxy specific data such as the cluster, route and destinations
-      var proxyFeature = context.GetReverseProxyFeature();
-      Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(proxyFeature.Route.Config));
+    // The context also stores a ReverseProxyFeature which holds proxy specific data such as the cluster, route and destinations
+    var proxyFeature = context.GetReverseProxyFeature();
+    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(proxyFeature.Route.Config));
 
-      // Important - required to move to the next step in the proxy pipeline
-      return next();
+    // Important - required to move to the next step in the proxy pipeline
+    return next();
 }
 ```
 
@@ -247,3 +227,13 @@ You can also use [ASP.NET middleware](https://docs.microsoft.com/aspnet/core/fun
 ## Using the debugger
 
 A debugger, such as Visual Studio can be attached to the proxy process. However, unless you have existing middleware, there is not a good place in the app code to break and inspect the state of the request. Therefore the debugger is best used in conjunction with one of the techniques above so that you have distinct places to insert breakpoints etc.
+
+## Network Tracing
+
+It can be attractive to use network tracing tools like [Fiddler](https://www.telerik.com/fiddler) or [Wireshark](https://www.wireshark.org/) to try to monitor what is happening either side of the proxy. However there are some gotchas to using both tools.
+
+- Fiddler registers itself as a proxy and relies on applications using the default proxy to be able to monitor traffic. This works for inbound traffic from a browser to YARP, but will not capture the outbound requests as YARP is configured to not use the proxy settings for outbound traffic.
+- On windows Wireshark uses Npcap to capture packet data for network traffic, so it will capture both inbound and outbound traffic, and can be used to monitor HTTP traffic. Wireshark works out of the box for HTTP traffic.
+- HTTPS traffic is encrypted, and so is not automatically decryptable by network monitoring tools. Each tool has workarounds that may enable traffic to be monitored, but they require hacking around with certificates and trust relationships. Because YARP is making outbound requests, techniques for tricking browsers do not apply to the YARP process.
+  
+The protocol choice for outbound traffic is made based on the destination URL in the cluster configuration. If traffic monitoring is being used for diagnostics then, if possible, changing the outbound URLs to "http://" may be simplest approach to enable the monitoring tools to work, provided the issues being diagnosed are not transport protocol related.

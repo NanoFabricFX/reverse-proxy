@@ -2,13 +2,12 @@
 
 ## Current status
 
-YARP 1.0 has [released](https://github.com/microsoft/reverse-proxy/releases/tag/v1.0.0).
+YARP 2.0 has [released](https://github.com/microsoft/reverse-proxy/releases/tag/v2.0.0).
 
 We are planning our next steps, we think the outline will probably look something like:
 
-- 1.0.x - Servicing high impact issues found by customers deploying 1.0 (bug fixes, small features)
-- 1.1 - Larger feedback items, non-breaking API changes
-- 2.0+ - Major features eg Kubernetes, Service Fabric, HTTP/3
+- 2.x - High pri customer asks
+- Ongoing - Major features eg Kubernetes
 
 The cadence for these will depend on the issues reported by customers.
 
@@ -20,8 +19,8 @@ The support period for YARP releases is as follows:
 
 | Release	| Issue Type | Support period |
 | --- | ---| --- |
-| 1.x	| Security Bugs, Major behavior defects	| Until next 1.x GA + 6 Months |
-| | Minor behavior defects	| Until next 1.x GA |
+| Major or minor version | Security Bugs, Major behavior defects	| Until next GA + 6 Months |
+| Patch version | Minor behavior defects	| Until next GA |
 | Preview | Security Bugs, Major behavior defects | Until next preview |
 | | All other | None - may be addressed by next preview |
 

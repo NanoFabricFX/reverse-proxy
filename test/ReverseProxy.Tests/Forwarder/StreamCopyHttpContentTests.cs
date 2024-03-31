@@ -8,23 +8,23 @@ using System.Net.Http;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
-using Yarp.Tests.Common;
 using Yarp.ReverseProxy.Utilities;
+using Yarp.Tests.Common;
 
 namespace Yarp.ReverseProxy.Forwarder.Tests;
 
 public class StreamCopyHttpContentTests
 {
-    private static StreamCopyHttpContent CreateContent(Stream source = null, bool autoFlushHttpClientOutgoingStream = false, IClock clock = null, ActivityCancellationTokenSource contentCancellation = null)
+    private static StreamCopyHttpContent CreateContent(HttpContext context = null, bool isStreamingRequest = false, TimeProvider timeProvider = null, ActivityCancellationTokenSource contentCancellation = null)
     {
-        source ??= new MemoryStream();
-        clock ??= new Clock();
-
+        context ??= new DefaultHttpContext();
+        timeProvider ??= TimeProvider.System;
         contentCancellation ??= ActivityCancellationTokenSource.Rent(TimeSpan.FromSeconds(10), CancellationToken.None);
-
-        return new StreamCopyHttpContent(source, autoFlushHttpClientOutgoingStream, clock, contentCancellation);
+        return new StreamCopyHttpContent(context, isStreamingRequest, timeProvider, NullLogger.Instance, contentCancellation);
     }
 
     [Fact]
@@ -33,10 +33,11 @@ public class StreamCopyHttpContentTests
         const int SourceSize = (128 * 1024) - 3;
 
         var sourceBytes = Enumerable.Range(0, SourceSize).Select(i => (byte)(i % 256)).ToArray();
-        var source = new MemoryStream(sourceBytes);
+        var context = new DefaultHttpContext();
+        context.Request.Body = new MemoryStream(sourceBytes);
         var destination = new MemoryStream();
 
-        var sut = CreateContent(source);
+        var sut = CreateContent(context);
 
         Assert.False(sut.ConsumptionTask.IsCompleted);
         Assert.False(sut.Started);
@@ -66,11 +67,12 @@ public class StreamCopyHttpContentTests
         expectedFlushes++;
 
         var sourceBytes = Enumerable.Range(0, SourceSize).Select(i => (byte)(i % 256)).ToArray();
-        var source = new MemoryStream(sourceBytes);
+        var context = new DefaultHttpContext();
+        context.Request.Body = new MemoryStream(sourceBytes);
         var destination = new MemoryStream();
         var flushCountingDestination = new FlushCountingStream(destination);
 
-        var sut = CreateContent(source, autoFlushHttpClientOutgoingStream: autoFlush);
+        var sut = CreateContent(context, autoFlush);
 
         Assert.False(sut.ConsumptionTask.IsCompleted);
         Assert.False(sut.Started);
@@ -88,9 +90,11 @@ public class StreamCopyHttpContentTests
         var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         var source = new Mock<Stream>();
         source.Setup(s => s.ReadAsync(It.IsAny<Memory<byte>>(), It.IsAny<CancellationToken>())).Returns(() => new ValueTask<int>(tcs.Task));
+        var context = new DefaultHttpContext();
+        context.Request.Body = source.Object;
         var destination = new MemoryStream();
 
-        var sut = CreateContent(source.Object);
+        var sut = CreateContent(context);
 
         Assert.False(sut.ConsumptionTask.IsCompleted);
         Assert.False(sut.Started);
@@ -120,7 +124,7 @@ public class StreamCopyHttpContentTests
         var sut = CreateContent();
 
         // This is an internal property that HttpClient and friends use internally and which must be true
-        // to support duplex channels.This test helps detect regressions or changes in undocumented behavior
+        // to support duplex channels. This test helps detect regressions or changes in undocumented behavior
         // in .NET Core, and it passes as of .NET Core 3.1.
         var allowDuplexProperty = typeof(HttpContent).GetProperty("AllowDuplex", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
         Assert.NotNull(allowDuplexProperty);
@@ -146,9 +150,12 @@ public class StreamCopyHttpContentTests
             return 0;
         });
 
+        var context = new DefaultHttpContext();
+        context.Request.Body = source;
+
         using var contentCts = ActivityCancellationTokenSource.Rent(TimeSpan.FromSeconds(10), CancellationToken.None);
 
-        var sut = CreateContent(source, contentCancellation: contentCts);
+        var sut = CreateContent(context, contentCancellation: contentCts);
 
         var copyToTask = sut.CopyToWithCancellationAsync(new MemoryStream());
         contentCts.Cancel();
@@ -157,7 +164,6 @@ public class StreamCopyHttpContentTests
         await copyToTask;
     }
 
-#if NET
     [Fact]
     public async Task SerializeToStreamAsync_CanBeCanceledExternally()
     {
@@ -176,7 +182,10 @@ public class StreamCopyHttpContentTests
             return 0;
         });
 
-        var sut = CreateContent(source);
+        var context = new DefaultHttpContext();
+        context.Request.Body = source;
+
+        var sut = CreateContent(context);
 
         using var cts = new CancellationTokenSource();
         var copyToTask = sut.CopyToAsync(new MemoryStream(), cts.Token);
@@ -185,7 +194,6 @@ public class StreamCopyHttpContentTests
 
         await copyToTask;
     }
-#endif
 
     private class FlushCountingStream : DelegatingStream
     {

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -45,7 +46,9 @@ public class ForwarderHttpClientFactory : IForwarderHttpClientFactory
             UseProxy = false,
             AllowAutoRedirect = false,
             AutomaticDecompression = DecompressionMethods.None,
-            UseCookies = false
+            UseCookies = false,
+            ActivityHeadersPropagator = new ReverseProxyPropagator(DistributedContextPropagator.Current),
+            ConnectTimeout = TimeSpan.FromSeconds(15),
 
             // NOTE: MaxResponseHeadersLength = 64, which means up to 64 KB of headers are allowed by default as of .NET Core 3.1.
         };
@@ -65,7 +68,7 @@ public class ForwarderHttpClientFactory : IForwarderHttpClientFactory
     /// </summary>
     protected virtual bool CanReuseOldClient(ForwarderHttpClientContext context)
     {
-        return context.OldClient != null && context.NewConfig == context.OldConfig;
+        return context.OldClient is not null && context.NewConfig == context.OldConfig;
     }
 
     /// <summary>
@@ -82,7 +85,7 @@ public class ForwarderHttpClientFactory : IForwarderHttpClientFactory
         {
             handler.SslOptions.EnabledSslProtocols = newConfig.SslProtocols.Value;
         }
-        if (newConfig.MaxConnectionsPerServer != null)
+        if (newConfig.MaxConnectionsPerServer is not null)
         {
             handler.MaxConnectionsPerServer = newConfig.MaxConnectionsPerServer.Value;
         }
@@ -90,17 +93,23 @@ public class ForwarderHttpClientFactory : IForwarderHttpClientFactory
         {
             handler.SslOptions.RemoteCertificateValidationCallback = delegate { return true; };
         }
-#if NET
+
         handler.EnableMultipleHttp2Connections = newConfig.EnableMultipleHttp2Connections.GetValueOrDefault(true);
 
-        if (newConfig.RequestHeaderEncoding != null)
+        if (newConfig.RequestHeaderEncoding is not null)
         {
             var encoding = Encoding.GetEncoding(newConfig.RequestHeaderEncoding);
             handler.RequestHeaderEncodingSelector = (_, _) => encoding;
         }
-#endif
+
+        if (newConfig.ResponseHeaderEncoding is not null)
+        {
+            var encoding = Encoding.GetEncoding(newConfig.ResponseHeaderEncoding);
+            handler.ResponseHeaderEncodingSelector = (_, _) => encoding;
+        }
+
         var webProxy = TryCreateWebProxy(newConfig.WebProxy);
-        if (webProxy != null)
+        if (webProxy is not null)
         {
             handler.Proxy = webProxy;
             handler.UseProxy = true;
@@ -109,7 +118,7 @@ public class ForwarderHttpClientFactory : IForwarderHttpClientFactory
 
     private static IWebProxy? TryCreateWebProxy(WebProxyConfig? webProxyConfig)
     {
-        if (webProxyConfig == null || webProxyConfig.Address == null)
+        if (webProxyConfig is null || webProxyConfig.Address is null)
         {
             return null;
         }

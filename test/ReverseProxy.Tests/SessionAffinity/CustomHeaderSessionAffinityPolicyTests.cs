@@ -16,7 +16,7 @@ public class CustomHeaderSessionAffinityPolicyTests
     {
         Enabled = true,
         Policy = "Cookie",
-        FailurePolicy = "Return503",
+        FailurePolicy = "Return503Error",
         AffinityKeyName = AffinityHeaderName
     };
     private readonly IReadOnlyList<DestinationState> _destinations = new[] { new DestinationState("dest-A"), new DestinationState("dest-B"), new DestinationState("dest-C") };
@@ -51,7 +51,7 @@ public class CustomHeaderSessionAffinityPolicyTests
         var affinityResult = policy.FindAffinitizedDestinations(context, cluster, _defaultOptions, _destinations);
 
         Assert.Equal(AffinityStatus.OK, affinityResult.Status);
-        Assert.Equal(1, affinityResult.Destinations.Count);
+        Assert.Single(affinityResult.Destinations);
         Assert.Same(affinitizedDestination, affinityResult.Destinations[0]);
     }
 

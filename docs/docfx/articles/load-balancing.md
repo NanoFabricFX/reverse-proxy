@@ -1,7 +1,5 @@
 # Load Balancing
 
-Introduced: preview8
-
 ## Introduction
 
 Whenever there are multiple healthy destinations available, YARP has to decide which one to use for a given request.
@@ -50,7 +48,7 @@ var clusters = new[]
     {
         ClusterId = "cluster1",
         LoadBalancingPolicy = LoadBalancingPolicies.RoundRobin,
-        Destinations = new Dictionary<string, Destination>(StringComparer.OrdinalIgnoreCase)
+        Destinations = new Dictionary<string, DestinationConfig>(StringComparer.OrdinalIgnoreCase)
         {
             { "destination1", new DestinationConfig() { Address = "https://localhost:10000" } },
             { "destination2", new DestinationConfig() { Address = "https://localhost:10010" } }
@@ -97,7 +95,7 @@ public sealed class LastLoadBalancingPolicy : ILoadBalancingPolicy
     }
 }
 
-// Register it in DI
+// Register it in DI in ConfigureServices method
 services.AddSingleton<ILoadBalancingPolicy, LastLoadBalancingPolicy>();
 
 // Set the LoadBalancingPolicy on the cluster

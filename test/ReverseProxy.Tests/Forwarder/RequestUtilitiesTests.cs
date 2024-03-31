@@ -153,4 +153,63 @@ public class RequestUtilitiesTests
             Assert.False(isValid, c.ToString());
         }
     }
+
+    [Theory]
+    [InlineData(null, "a", "a")]
+    [InlineData("a", "", "a;")]
+    [InlineData("", "a", ";a")]
+    [InlineData("a", "b", "a;b")]
+    [InlineData(null, "a;b", "a;b")]
+    [InlineData("a;b", "", "a;b;")]
+    [InlineData("", "a;b", ";a;b")]
+    [InlineData("a;b", "c", "a;b;c")]
+    [InlineData("a", "b;c", "a;b;c")]
+    [InlineData("a;b", "c;d", "a;b;c;d")]
+    [InlineData("a", "b c", "a;b c")]
+    [InlineData("a b", "c", "a b;c")]
+    public void Concat(string stringValues, string inputHeaderStringValues, string expectedOutput)
+    {
+        var request = new HttpRequestMessage();
+        foreach (var value in inputHeaderStringValues.Split(';'))
+        {
+            request.Headers.TryAddWithoutValidation("foo", value);
+        }
+        request.Headers.TryAddWithoutValidation("bar", inputHeaderStringValues.Split(';'));
+
+        var headerStringValues = request.Headers.NonValidated["foo"];
+        var actualValues = RequestUtilities.Concat(stringValues?.Split(';'), headerStringValues);
+        Assert.Equal(expectedOutput.Split(';'), actualValues);
+
+        headerStringValues = request.Headers.NonValidated["bar"];
+        actualValues = RequestUtilities.Concat(stringValues?.Split(';'), headerStringValues);
+        Assert.Equal(expectedOutput.Split(';'), actualValues);
+    }
+
+    [Theory]
+    [InlineData("a")]
+    [InlineData("a b")]
+    [InlineData("a", "b")]
+    [InlineData("a", "b c", "d")]
+    [InlineData("")]
+    [InlineData("", "")]
+    [InlineData("a", "")]
+    [InlineData("", "a")]
+    [InlineData("", "a", "b")]
+    [InlineData("", "a", "")]
+    [InlineData("a", "", "b")]
+    public void TryGetValues(params string[] headerValues)
+    {
+        var request = new HttpRequestMessage();
+        foreach (var value in headerValues)
+        {
+            request.Headers.TryAddWithoutValidation("foo", value);
+        }
+        request.Headers.TryAddWithoutValidation("bar", headerValues);
+
+        Assert.True(RequestUtilities.TryGetValues(request.Headers, "foo", out var actualValues));
+        Assert.Equal(headerValues, actualValues);
+
+        Assert.True(RequestUtilities.TryGetValues(request.Headers, "bar", out actualValues));
+        Assert.Equal(headerValues, actualValues);
+    }
 }

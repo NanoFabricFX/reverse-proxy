@@ -1,15 +1,19 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using k8s.Models;
+using YamlDotNet.Serialization;
 using Yarp.ReverseProxy.Configuration;
 using Yarp.Kubernetes.Controller.Caching;
-using Yarp.Kubernetes.Controller.Services;
 
 namespace Yarp.Kubernetes.Controller.Converters;
 
 internal static class YarpParser
 {
+    private const string ExternalNameServiceType = "ExternalName";
+    private static readonly Deserializer YamlDeserializer = new();
+
     internal static void ConvertFromKubernetesIngress(YarpIngressContext ingressContext, YarpConfigContext configContext)
     {
         var spec = ingressContext.Ingress.Spec;
@@ -25,7 +29,7 @@ internal static class YarpParser
         // cluster can contain multiple replicas for each destination, need to know the lookup base don endpoints
         var options = HandleAnnotations(ingressContext, ingressContext.Ingress.Metadata);
 
-        foreach (var rule in spec.Rules ?? Enumerable.Empty<V1IngressRule>())
+        foreach (var rule in spec?.Rules ?? Enumerable.Empty<V1IngressRule>())
         {
             HandleIngressRule(ingressContext, ingressContext.Endpoints, defaultSubsets, rule, configContext);
         }
@@ -37,9 +41,37 @@ internal static class YarpParser
         foreach (var path in http.Paths ?? Enumerable.Empty<V1HTTPIngressPath>())
         {
             var service = ingressContext.Services.SingleOrDefault(s => s.Metadata.Name == path.Backend.Service.Name);
-            var servicePort = service.Spec.Ports.SingleOrDefault(p => MatchesPort(p, path.Backend.Service.Port));
-            HandleIngressRulePath(ingressContext, servicePort, endpoints, defaultSubsets, rule, path, configContext);
+            if (service.Spec != null)
+            {
+                if (string.Equals(service.Spec.Type, ExternalNameServiceType, StringComparison.OrdinalIgnoreCase))
+                {
+                    HandleExternalIngressRulePath(ingressContext, service.Spec.ExternalName, rule, path, configContext);
+                }
+                else
+                {
+                    var servicePort = service.Spec.Ports.SingleOrDefault(p => MatchesPort(p, path.Backend.Service.Port));
+                    if (servicePort != null)
+                    {
+                        HandleIngressRulePath(ingressContext, servicePort, endpoints, defaultSubsets, rule, path, configContext);
+                    }
+                }
+            }
         }
+    }
+
+    private static void HandleExternalIngressRulePath(YarpIngressContext ingressContext, string externalName, V1IngressRule rule, V1HTTPIngressPath path, YarpConfigContext configContext)
+    {
+        var backend = path.Backend;
+        var ingressServiceBackend = backend.Service;
+        var routes = configContext.Routes;
+
+        var cluster = GetOrAddCluster(ingressContext, configContext, ingressServiceBackend);
+
+        var pathMatch = FixupPathMatch(path);
+        var host = rule.Host;
+
+        routes.Add(CreateRoute(ingressContext, path, cluster, pathMatch, host));
+        AddDestination(cluster, ingressContext, externalName, ingressServiceBackend.Port.Number);
     }
 
     private static void HandleIngressRulePath(YarpIngressContext ingressContext, V1ServicePort servicePort, List<Endpoints> endpoints, IList<V1EndpointSubset> defaultSubsets, V1IngressRule rule, V1HTTPIngressPath path, YarpConfigContext configContext)
@@ -47,8 +79,6 @@ internal static class YarpParser
         var backend = path.Backend;
         var ingressServiceBackend = backend.Service;
         var subsets = defaultSubsets;
-
-        var clusters = configContext.ClusterTransfers;
         var routes = configContext.Routes;
 
         if (!string.IsNullOrEmpty(ingressServiceBackend?.Name))
@@ -56,22 +86,14 @@ internal static class YarpParser
             subsets = endpoints.SingleOrDefault(x => x.Name == ingressServiceBackend?.Name).Subsets;
         }
 
-        // Each ingress rule path can only be for one service
-        var key = ingressServiceBackend.Port.Number.HasValue ? $"{ingressServiceBackend?.Name}:{ingressServiceBackend?.Port.Number}" : $"{ingressServiceBackend?.Name}:{ingressServiceBackend?.Port.Name}";
-        if (!clusters.ContainsKey(key))
-        {
-            clusters.Add(key, new ClusterTransfer());
-        }
-
-        var cluster = clusters[key];
-        cluster.ClusterId = key;
+        var cluster = GetOrAddCluster(ingressContext, configContext, ingressServiceBackend);
 
         // make sure cluster is present
         foreach (var subset in subsets ?? Enumerable.Empty<V1EndpointSubset>())
         {
-            foreach (var port in subset.Ports ?? Enumerable.Empty<V1EndpointPort>())
+            foreach (var port in subset.Ports ?? Enumerable.Empty<Corev1EndpointPort>())
             {
-                if (!MatchesPort(port, servicePort.TargetPort))
+                if (!MatchesPort(port, servicePort))
                 {
                     continue;
                 }
@@ -79,29 +101,94 @@ internal static class YarpParser
                 var pathMatch = FixupPathMatch(path);
                 var host = rule.Host;
 
-                routes.Add(new RouteConfig()
-                {
-                    Match = new RouteMatch()
-                    {
-                        Hosts = host != null ? new[] { host } : Array.Empty<string>(),
-                        Path = pathMatch
-                    },
-                    ClusterId = cluster.ClusterId,
-                    RouteId = $"{ingressContext.Ingress.Metadata.Name}:{path.Path}"
-                });
+                routes.Add(CreateRoute(ingressContext, path, cluster, pathMatch, host));
 
                 // Add destination for every endpoint address
                 foreach (var address in subset.Addresses ?? Enumerable.Empty<V1EndpointAddress>())
                 {
-                    var protocol = ingressContext.Options.Https ? "https" : "http";
-                    var uri = $"{protocol}://{address.Ip}:{port.Port}";
-                    cluster.Destinations[uri] = new DestinationConfig()
-                    {
-                        Address = uri
-                    };
+                    AddDestination(cluster, ingressContext, address.Ip, port.Port);
                 }
             }
         }
+    }
+
+    private static void AddDestination(ClusterTransfer cluster, YarpIngressContext ingressContext, string host, int? port)
+    {
+        var protocol = ingressContext.Options.Https ? "https" : "http";
+        var uri = $"{protocol}://{host}";
+        if (port.HasValue)
+        {
+            uri += $":{port}";
+        }
+        cluster.Destinations[uri] = new DestinationConfig()
+        {
+            Address = uri
+        };
+    }
+
+    private static RouteConfig CreateRoute(YarpIngressContext ingressContext, V1HTTPIngressPath path, ClusterTransfer cluster, string pathMatch, string host)
+    {
+        return new RouteConfig()
+        {
+            Match = new RouteMatch()
+            {
+                Hosts = host is not null ? new[] { host } : Array.Empty<string>(),
+                Path = pathMatch,
+                Headers = ingressContext.Options.RouteHeaders,
+                QueryParameters = ingressContext.Options.RouteQueryParameters
+            },
+            ClusterId = cluster.ClusterId,
+            RouteId = $"{ingressContext.Ingress.Metadata.Name}.{ingressContext.Ingress.Metadata.NamespaceProperty}:{host}{path.Path}",
+            Transforms = ingressContext.Options.Transforms,
+            AuthorizationPolicy = ingressContext.Options.AuthorizationPolicy,
+#if NET7_0_OR_GREATER
+            RateLimiterPolicy = ingressContext.Options.RateLimiterPolicy,
+            OutputCachePolicy = ingressContext.Options.OutputCachePolicy,
+#endif
+#if NET8_0_OR_GREATER
+            Timeout = ingressContext.Options.Timeout,
+            TimeoutPolicy = ingressContext.Options.TimeoutPolicy,
+#endif
+            CorsPolicy = ingressContext.Options.CorsPolicy,
+            Metadata = ingressContext.Options.RouteMetadata,
+            Order = ingressContext.Options.RouteOrder,
+        };
+    }
+
+    private static ClusterTransfer GetOrAddCluster(YarpIngressContext ingressContext, YarpConfigContext configContext, V1IngressServiceBackend ingressServiceBackend)
+    {
+        var clusters = configContext.ClusterTransfers;
+        // Each ingress rule path can only be for one service
+        var key = UpstreamName(ingressContext.Ingress.Metadata.NamespaceProperty, ingressServiceBackend);
+        if (!clusters.ContainsKey(key))
+        {
+            clusters.Add(key, new ClusterTransfer());
+        }
+        var cluster = clusters[key];
+        cluster.ClusterId = key;
+        cluster.LoadBalancingPolicy = ingressContext.Options.LoadBalancingPolicy;
+        cluster.SessionAffinity = ingressContext.Options.SessionAffinity;
+        cluster.HealthCheck = ingressContext.Options.HealthCheck;
+        cluster.HttpClientConfig = ingressContext.Options.HttpClientConfig;
+        return cluster;
+    }
+
+    private static string UpstreamName(string namespaceName, V1IngressServiceBackend ingressServiceBackend)
+    {
+        if (ingressServiceBackend is not null)
+        {
+            if (ingressServiceBackend.Port.Number.HasValue && ingressServiceBackend.Port.Number.Value > 0)
+            {
+                return $"{ingressServiceBackend.Name}.{namespaceName}:{ingressServiceBackend.Port.Number}";
+            }
+
+            if (!string.IsNullOrWhiteSpace(ingressServiceBackend.Port.Name))
+            {
+                return $"{ingressServiceBackend.Name}.{namespaceName}:{ingressServiceBackend.Port.Name}";
+            }
+        }
+
+        return $"{namespaceName}-INVALID";
     }
 
     private static string FixupPathMatch(V1HTTPIngressPath path)
@@ -127,7 +214,7 @@ internal static class YarpParser
     {
         var options = context.Options;
         var annotations = metadata.Annotations;
-        if (annotations == null)
+        if (annotations is null)
         {
             return options;
         }
@@ -136,7 +223,72 @@ internal static class YarpParser
         {
             options.Https = http.Equals("https", StringComparison.OrdinalIgnoreCase);
         }
-
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/transforms", out var transforms))
+        {
+            options.Transforms = YamlDeserializer.Deserialize<List<Dictionary<string, string>>>(transforms);
+        }
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/authorization-policy", out var authorizationPolicy))
+        {
+            options.AuthorizationPolicy = authorizationPolicy;
+        }
+#if NET7_0_OR_GREATER
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/rate-limiter-policy", out var rateLimiterPolicy))
+        {
+            options.RateLimiterPolicy = rateLimiterPolicy;
+        }
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/output-cache-policy", out var outputCachePolicy))
+        {
+            options.OutputCachePolicy = outputCachePolicy;
+        }
+#endif
+#if NET8_0_OR_GREATER
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/timeout", out var timeout))
+        {
+            options.Timeout = TimeSpan.Parse(timeout, CultureInfo.InvariantCulture);
+        }
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/timeout-policy", out var timeoutPolicy))
+        {
+            options.TimeoutPolicy = timeoutPolicy;
+        }
+#endif
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/cors-policy", out var corsPolicy))
+        {
+            options.CorsPolicy = corsPolicy;
+        }
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/session-affinity", out var sessionAffinity))
+        {
+            options.SessionAffinity = YamlDeserializer.Deserialize<SessionAffinityConfig>(sessionAffinity);
+        }
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/load-balancing", out var loadBalancing))
+        {
+            options.LoadBalancingPolicy = loadBalancing;
+        }
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/http-client", out var httpClientConfig))
+        {
+            options.HttpClientConfig = YamlDeserializer.Deserialize<HttpClientConfig>(httpClientConfig);
+        }
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/health-check", out var healthCheck))
+        {
+            options.HealthCheck = YamlDeserializer.Deserialize<HealthCheckConfig>(healthCheck);
+        }
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/route-metadata", out var routeMetadata))
+        {
+            options.RouteMetadata = YamlDeserializer.Deserialize<Dictionary<string, string>>(routeMetadata);
+        }
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/route-headers", out var routeHeaders))
+        {
+            // YamlDeserializer does not support IReadOnlyList<string> in RouteHeader for now, so we use RouteHeaderWrapper to solve this problem.
+            options.RouteHeaders = YamlDeserializer.Deserialize<List<RouteHeaderWrapper>>(routeHeaders).Select(p => p.ToRouteHeader()).ToList();
+        }
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/route-queryparameters", out var routeQueryParameters))
+        {
+            // YamlDeserializer does not support IReadOnlyList<string> in RouteParameters for now, so we use RouterQueryParameterWrapper to solve this problem.
+            options.RouteQueryParameters = YamlDeserializer.Deserialize<List<RouteQueryParameterWrapper>>(routeQueryParameters).Select(p => p.ToRouteQueryParameter()).ToList();
+        }
+        if (annotations.TryGetValue("yarp.ingress.kubernetes.io/route-order", out var routeOrder))
+        {
+            options.RouteOrder = int.Parse(routeOrder, CultureInfo.InvariantCulture);
+        }
         // metadata to support:
         // rewrite target
         // auth
@@ -152,17 +304,17 @@ internal static class YarpParser
         return options;
     }
 
-    private static bool MatchesPort(V1EndpointPort port1, IntstrIntOrString port2)
+    private static bool MatchesPort(Corev1EndpointPort port1, V1ServicePort port2)
     {
-        if (port1 == null || port2 == null)
+        if (port1 is null || port2?.TargetPort is null)
         {
             return false;
         }
-        if (int.TryParse(port2, out var port2Number) && port2Number == port1.Port)
+        if (int.TryParse(port2.TargetPort, out var port2Number) && port2Number == port1.Port)
         {
             return true;
         }
-        if (string.Equals(port2, port1.Name, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(port2.Name, port1.Name, StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
@@ -171,15 +323,15 @@ internal static class YarpParser
 
     private static bool MatchesPort(V1ServicePort port1, V1ServiceBackendPort port2)
     {
-        if (port1 == null || port2 == null)
+        if (port1 is null || port2 is null)
         {
             return false;
         }
-        if (port2.Number != null && port2.Number == port1.Port)
+        if (port2.Number is not null && port2.Number == port1.Port)
         {
             return true;
         }
-        if (port2.Name != null && string.Equals(port2.Name, port1.Name, StringComparison.Ordinal))
+        if (port2.Name is not null && string.Equals(port2.Name, port1.Name, StringComparison.Ordinal))
         {
             return true;
         }

@@ -3,36 +3,39 @@
 
 using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Threading;
 
 namespace Yarp.ReverseProxy.Utilities;
 
 internal sealed class ActivityCancellationTokenSource : CancellationTokenSource
 {
-#if NET6_0_OR_GREATER
     private const int MaxQueueSize = 1024;
     private static readonly ConcurrentQueue<ActivityCancellationTokenSource> _sharedSources = new();
     private static int _count;
-#endif
 
     private static readonly Action<object?> _linkedTokenCancelDelegate = static s =>
     {
-        ((ActivityCancellationTokenSource)s!).Cancel(throwOnFirstException: false);
+        var cts = (ActivityCancellationTokenSource)s!;
+        cts.CancelledByLinkedToken = true;
+        cts.Cancel(throwOnFirstException: false);
     };
 
     private int _activityTimeoutMs;
-    private CancellationTokenRegistration _linkedRegistration;
+    private CancellationTokenRegistration _linkedRegistration1;
+    private CancellationTokenRegistration _linkedRegistration2;
 
     private ActivityCancellationTokenSource() { }
+
+    public bool CancelledByLinkedToken { get; private set; }
 
     public void ResetTimeout()
     {
         CancelAfter(_activityTimeoutMs);
     }
 
-    public static ActivityCancellationTokenSource Rent(TimeSpan activityTimeout, CancellationToken linkedToken)
+    public static ActivityCancellationTokenSource Rent(TimeSpan activityTimeout, CancellationToken linkedToken1 = default, CancellationToken linkedToken2 = default)
     {
-#if NET6_0_OR_GREATER
         if (_sharedSources.TryDequeue(out var cts))
         {
             Interlocked.Decrement(ref _count);
@@ -41,12 +44,10 @@ internal sealed class ActivityCancellationTokenSource : CancellationTokenSource
         {
             cts = new ActivityCancellationTokenSource();
         }
-#else
-        var cts = new ActivityCancellationTokenSource();
-#endif
 
         cts._activityTimeoutMs = (int)activityTimeout.TotalMilliseconds;
-        cts._linkedRegistration = linkedToken.UnsafeRegister(_linkedTokenCancelDelegate, cts);
+        cts._linkedRegistration1 = linkedToken1.UnsafeRegister(_linkedTokenCancelDelegate, cts);
+        cts._linkedRegistration2 = linkedToken2.UnsafeRegister(_linkedTokenCancelDelegate, cts);
         cts.ResetTimeout();
 
         return cts;
@@ -54,12 +55,15 @@ internal sealed class ActivityCancellationTokenSource : CancellationTokenSource
 
     public void Return()
     {
-        _linkedRegistration.Dispose();
-        _linkedRegistration = default;
+        _linkedRegistration1.Dispose();
+        _linkedRegistration1 = default;
+        _linkedRegistration2.Dispose();
+        _linkedRegistration2 = default;
 
-#if NET6_0_OR_GREATER
         if (TryReset())
         {
+            Debug.Assert(!CancelledByLinkedToken);
+
             if (Interlocked.Increment(ref _count) <= MaxQueueSize)
             {
                 _sharedSources.Enqueue(this);
@@ -68,7 +72,6 @@ internal sealed class ActivityCancellationTokenSource : CancellationTokenSource
 
             Interlocked.Decrement(ref _count);
         }
-#endif
 
         Dispose();
     }

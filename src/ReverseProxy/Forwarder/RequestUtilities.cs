@@ -2,15 +2,19 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Buffers;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
+using Yarp.ReverseProxy.Utilities;
 
 namespace Yarp.ReverseProxy.Forwarder;
 
@@ -19,6 +23,11 @@ namespace Yarp.ReverseProxy.Forwarder;
 /// </summary>
 public static class RequestUtilities
 {
+#if NET8_0_OR_GREATER
+    private static readonly SearchValues<char> s_validPathChars =
+        SearchValues.Create("!$&'()*+,-./0123456789:;=@ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~");
+#endif
+
     /// <summary>
     /// Converts the given HTTP method (usually obtained from <see cref="HttpRequest.Method"/>)
     /// into the corresponding <see cref="HttpMethod"/> static instance.
@@ -59,16 +68,16 @@ public static class RequestUtilities
         return _headersToExclude.Contains(headerName);
     }
 
-    private static readonly HashSet<string> _headersToExclude = new(22, StringComparer.OrdinalIgnoreCase)
+    private static readonly FrozenSet<string> _headersToExclude = new HashSet<string>(17, StringComparer.OrdinalIgnoreCase)
     {
         HeaderNames.Connection,
         HeaderNames.TransferEncoding,
         HeaderNames.KeepAlive,
         HeaderNames.Upgrade,
-        "Proxy-Connection",
-        "Proxy-Authenticate",
+        HeaderNames.ProxyConnection,
+        HeaderNames.ProxyAuthenticate,
         "Proxy-Authentication-Info",
-        "Proxy-Authorization",
+        HeaderNames.ProxyAuthorization,
         "Proxy-Features",
         "Proxy-Instruction",
         "Security-Scheme",
@@ -77,25 +86,12 @@ public static class RequestUtilities
         "HTTP2-Settings",
         HeaderNames.UpgradeInsecureRequests,
         HeaderNames.TE,
-#if NET
         HeaderNames.AltSvc,
-#else
-        "Alt-Svc",
-#endif
-
-#if NET6_0_OR_GREATER
-        // Distributed context headers
-        HeaderNames.TraceParent,
-        HeaderNames.RequestId,
-        HeaderNames.TraceState,
-        HeaderNames.Baggage,
-        HeaderNames.CorrelationContext,
-#endif
-    };
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     // Headers marked as HttpHeaderType.Content in
     // https://github.com/dotnet/runtime/blob/main/src/libraries/System.Net.Http/src/System/Net/Http/Headers/KnownHeaders.cs
-    private static readonly HashSet<string> _contentHeaders = new(11, StringComparer.OrdinalIgnoreCase)
+    private static readonly FrozenSet<string> _contentHeaders = new HashSet<string>(11, StringComparer.OrdinalIgnoreCase)
     {
         HeaderNames.Allow,
         HeaderNames.ContentDisposition,
@@ -108,7 +104,7 @@ public static class RequestUtilities
         HeaderNames.ContentType,
         HeaderNames.Expires,
         HeaderNames.LastModified
-    };
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Appends the given path and query to the destination prefix while avoiding duplicate '/'.
@@ -135,27 +131,37 @@ public static class RequestUtilities
     // This isn't using PathString.ToUriComponent() because it doesn't round trip some escape sequences the way we want.
     private static string EncodePath(PathString path)
     {
-        if (!path.HasValue)
+        var value = path.Value;
+
+        if (string.IsNullOrEmpty(value))
         {
             return string.Empty;
         }
 
         // Check if any escaping is required.
-        var value = path.Value!;
+#if NET8_0_OR_GREATER
+        var indexOfInvalidChar = value.AsSpan().IndexOfAnyExcept(s_validPathChars);
+#else
+        var indexOfInvalidChar = -1;
+
         for (var i = 0; i < value.Length; i++)
         {
             if (!IsValidPathChar(value[i]))
             {
-                return EncodePath(value, i);
+                indexOfInvalidChar = i;
+                break;
             }
         }
+#endif
 
-        return value;
+        return indexOfInvalidChar < 0
+            ? value
+            : EncodePath(value, indexOfInvalidChar);
     }
 
     private static string EncodePath(string value, int i)
     {
-        StringBuilder? buffer = null;
+        var builder = new ValueStringBuilder(stackalloc char[ValueStringBuilder.StackallocThreshold]);
 
         var start = 0;
         var count = i;
@@ -168,8 +174,7 @@ public static class RequestUtilities
                 if (requiresEscaping)
                 {
                     // the current segment requires escape
-                    buffer ??= new StringBuilder(value.Length * 3);
-                    buffer.Append(Uri.EscapeDataString(value.Substring(start, count)));
+                    builder.Append(Uri.EscapeDataString(value.Substring(start, count)));
 
                     requiresEscaping = false;
                     start = i;
@@ -184,8 +189,7 @@ public static class RequestUtilities
                 if (!requiresEscaping)
                 {
                     // the current segment doesn't require escape
-                    buffer ??= new StringBuilder(value.Length * 3);
-                    buffer.Append(value, start, count);
+                    builder.Append(value.AsSpan(start, count));
 
                     requiresEscaping = true;
                     start = i;
@@ -197,30 +201,24 @@ public static class RequestUtilities
             }
         }
 
-        if (count == value.Length && !requiresEscaping)
+        Debug.Assert(count > 0);
+
+        if (requiresEscaping)
         {
-            return value;
+            builder.Append(Uri.EscapeDataString(value.Substring(start, count)));
         }
         else
         {
-            if (count > 0)
-            {
-                buffer ??= new StringBuilder(value.Length * 3);
-
-                if (requiresEscaping)
-                {
-                    buffer.Append(Uri.EscapeDataString(value.Substring(start, count)));
-                }
-                else
-                {
-                    buffer.Append(value, start, count);
-                }
-            }
-
-            return buffer?.ToString() ?? string.Empty;
+            builder.Append(value.AsSpan(start, count));
         }
+
+        return builder.ToString();
     }
 
+#if NET8_0_OR_GREATER
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool IsValidPathChar(char c) => s_validPathChars.Contains(c);
+#else
     // https://datatracker.ietf.org/doc/html/rfc3986/#appendix-A
     // pchar         = unreserved / pct-encoded / sub-delims / ":" / "@"
     // pct-encoded   = "%" HEXDIG HEXDIG
@@ -255,6 +253,7 @@ public static class RequestUtilities
         return (uint)offset < (uint)validChars.Length &&
             ((validChars[offset] & significantBit) != 0);
     }
+#endif
 
     // Note: HttpClient.SendAsync will end up sending the union of
     // HttpRequestMessage.Headers and HttpRequestMessage.Content.Headers.
@@ -266,7 +265,7 @@ public static class RequestUtilities
     {
         if (value.Count == 1)
         {
-            string headerValue = value;
+            string headerValue = value!;
 
             if (ContainsNewLines(headerValue))
             {
@@ -288,8 +287,9 @@ public static class RequestUtilities
         }
         else
         {
-            string[] headerValues = value;
+            string[] headerValues = value!;
 
+#if !NET7_0_OR_GREATER
             // HttpClient wrongly uses comma (",") instead of semi-colon (";") as a separator for Cookie headers.
             // To mitigate this, we concatenate them manually and put them back as a single header value.
             // A multi-header cookie header is invalid, but we get one because of
@@ -299,6 +299,7 @@ public static class RequestUtilities
                 AddHeader(request, headerName, string.Join("; ", headerValues));
                 return;
             }
+#endif
 
             foreach (var headerValue in headerValues)
             {
@@ -343,5 +344,81 @@ public static class RequestUtilities
         {
             request.Headers.Remove(headerName);
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static StringValues Concat(in StringValues existing, in HeaderStringValues values)
+    {
+        if (values.Count <= 1)
+        {
+            return StringValues.Concat(existing, values.ToString());
+        }
+        else
+        {
+            return ConcatSlow(existing, values);
+        }
+
+        static StringValues ConcatSlow(in StringValues existing, in HeaderStringValues values)
+        {
+            Debug.Assert(values.Count > 1);
+
+            var count = existing.Count;
+            var newArray = new string[count + values.Count];
+
+            if (count == 1)
+            {
+                newArray[0] = existing.ToString();
+            }
+            else
+            {
+                existing.ToArray().CopyTo(newArray, 0);
+            }
+
+            foreach (var value in values)
+            {
+                newArray[count++] = value;
+            }
+            Debug.Assert(count == newArray.Length);
+
+            return newArray;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool TryGetValues(HttpHeaders headers, string headerName, out StringValues values)
+    {
+        if (headers.NonValidated.TryGetValues(headerName, out var headerStringValues))
+        {
+            if (headerStringValues.Count <= 1)
+            {
+                values = headerStringValues.ToString();
+            }
+            else
+            {
+                values = ToArray(headerStringValues);
+            }
+            return true;
+        }
+
+        static StringValues ToArray(in HeaderStringValues values)
+        {
+            var array = new string[values.Count];
+            var i = 0;
+            foreach (var value in values)
+            {
+                array[i++] = value;
+            }
+            Debug.Assert(i == array.Length);
+            return array;
+        }
+
+        values = default;
+        return false;
+    }
+
+    internal static bool IsResponseSet(HttpResponse response)
+    {
+        return response.StatusCode != StatusCodes.Status200OK
+            || response.HasStarted;
     }
 }

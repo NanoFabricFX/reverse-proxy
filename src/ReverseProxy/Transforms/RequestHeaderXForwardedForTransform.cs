@@ -42,13 +42,20 @@ public class RequestHeaderXForwardedForTransform : RequestTransform
             throw new ArgumentNullException(nameof(context));
         }
 
-        var remoteIp = context.HttpContext.Connection.RemoteIpAddress?.ToString();
+        string? remoteIp = null;
+        var remoteIpAddress = context.HttpContext.Connection.RemoteIpAddress;
+        if (remoteIpAddress is not null)
+        {
+            remoteIp = remoteIpAddress.IsIPv4MappedToIPv6 ?
+                remoteIpAddress.MapToIPv4().ToString() :
+                remoteIpAddress.ToString();
+        }
 
         switch (TransformAction)
         {
             case ForwardedTransformActions.Set:
                 RemoveHeader(context, HeaderName);
-                if (remoteIp != null)
+                if (remoteIp is not null)
                 {
                     AddHeader(context, HeaderName, remoteIp);
                 }
@@ -69,7 +76,7 @@ public class RequestHeaderXForwardedForTransform : RequestTransform
     private void Append(RequestTransformContext context, string? remoteIp)
     {
         var existingValues = TakeHeader(context, HeaderName);
-        if (remoteIp == null)
+        if (remoteIp is null)
         {
             if (!string.IsNullOrEmpty(existingValues))
             {

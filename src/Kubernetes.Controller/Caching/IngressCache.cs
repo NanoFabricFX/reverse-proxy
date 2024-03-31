@@ -3,10 +3,13 @@
 
 using k8s;
 using k8s.Models;
-using Microsoft.Kubernetes;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Linq;
+using Yarp.Kubernetes.Controller.Certificates;
 using Yarp.Kubernetes.Controller.Services;
 
 namespace Yarp.Kubernetes.Controller.Caching;
@@ -18,9 +21,58 @@ namespace Yarp.Kubernetes.Controller.Caching;
 public class IngressCache : ICache
 {
     private readonly object _sync = new object();
+    private readonly Dictionary<string, IngressClassData> _ingressClassData = new Dictionary<string, IngressClassData>();
     private readonly Dictionary<string, NamespaceCache> _namespaceCaches = new Dictionary<string, NamespaceCache>();
+    private readonly YarpOptions _options;
+    private readonly IServerCertificateSelector _certificateSelector;
+    private readonly ICertificateHelper _certificateHelper;
+    private readonly ILogger<IngressCache> _logger;
 
-    public void Update(WatchEventType eventType, V1Ingress ingress)
+    private bool _isDefaultController;
+
+    public IngressCache(IOptions<YarpOptions> options, IServerCertificateSelector certificateSelector, ICertificateHelper certificateHelper, ILogger<IngressCache> logger)
+    {
+        _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
+        _certificateSelector = certificateSelector ?? throw new ArgumentNullException(nameof(certificateSelector));
+        _certificateHelper = certificateHelper ?? throw new ArgumentNullException(nameof(certificateHelper));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    public void Update(WatchEventType eventType, V1IngressClass ingressClass)
+    {
+        if (ingressClass is null)
+        {
+            throw new ArgumentNullException(nameof(ingressClass));
+        }
+
+        if (!string.Equals(_options.ControllerClass, ingressClass.Spec.Controller, StringComparison.OrdinalIgnoreCase))
+        {
+#pragma warning disable CA1303 // Do not pass literals as localized parameters
+            _logger.LogInformation(
+                "Ignoring {IngressClassNamespace}/{IngressClassName} as the spec.controller is not the same as this ingress",
+                ingressClass.Metadata.NamespaceProperty,
+                ingressClass.Metadata.Name);
+#pragma warning restore CA1303 // Do not pass literals as localized parameters
+            return;
+        }
+
+        var ingressClassName = ingressClass.Name();
+        lock (_sync)
+        {
+            if (eventType == WatchEventType.Added || eventType == WatchEventType.Modified)
+            {
+                _ingressClassData[ingressClassName] = new IngressClassData(ingressClass);
+            }
+            else if (eventType == WatchEventType.Deleted)
+            {
+                _ingressClassData.Remove(ingressClassName);
+            }
+
+            _isDefaultController = _ingressClassData.Values.Any(ic => ic.IsDefault);
+        }
+    }
+
+    public bool Update(WatchEventType eventType, V1Ingress ingress)
     {
         if (ingress is null)
         {
@@ -28,6 +80,7 @@ public class IngressCache : ICache
         }
 
         Namespace(ingress.Namespace()).Update(eventType, ingress);
+        return true;
     }
 
 
@@ -44,6 +97,34 @@ public class IngressCache : ICache
     public ImmutableList<string> Update(WatchEventType eventType, V1Endpoints endpoints)
     {
         return Namespace(endpoints.Namespace()).Update(eventType, endpoints);
+    }
+
+    public void Update(WatchEventType eventType, V1Secret secret)
+    {
+        var namespacedName = NamespacedName.From(secret);
+        _logger.LogDebug("Found secret '{NamespacedName}'. Checking against default {CertificateSecretName}", namespacedName, _options.DefaultSslCertificate);
+
+        if (!string.Equals(namespacedName.ToString(), _options.DefaultSslCertificate, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _logger.LogInformation("Found secret `{NamespacedName}` to use as default certificate for HTTPS traffic", namespacedName);
+
+        var certificate = _certificateHelper.ConvertCertificate(namespacedName, secret);
+        if (certificate is null)
+        {
+            return;
+        }
+
+        if (eventType == WatchEventType.Added || eventType == WatchEventType.Modified)
+        {
+            _certificateSelector.AddCertificate(namespacedName, certificate);
+        }
+        else if (eventType == WatchEventType.Deleted)
+        {
+            _certificateSelector.RemoveCertificate(namespacedName);
+        }
     }
 
     public bool TryGetReconcileData(NamespacedName key, out ReconcileData data)
@@ -70,11 +151,25 @@ public class IngressCache : ICache
         {
             foreach (var ns in _namespaceCaches)
             {
-                ingresses.AddRange(ns.Value.GetIngresses());
+                ingresses.AddRange(ns.Value.GetIngresses().Where(IsYarpIngress));
             }
         }
 
         return ingresses;
+    }
+
+    private bool IsYarpIngress(IngressData ingress)
+    {
+        if (ingress.Spec.IngressClassName is null)
+        {
+            return _isDefaultController;
+        }
+
+        lock (_sync)
+        {
+            return _ingressClassData.ContainsKey(ingress.Spec.IngressClassName);
+        }
+
     }
 
     private NamespaceCache Namespace(string key)

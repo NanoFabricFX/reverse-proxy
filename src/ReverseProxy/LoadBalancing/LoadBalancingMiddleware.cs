@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
@@ -17,7 +18,7 @@ namespace Yarp.ReverseProxy.LoadBalancing;
 internal sealed class LoadBalancingMiddleware
 {
     private readonly ILogger _logger;
-    private readonly IDictionary<string, ILoadBalancingPolicy> _loadBalancingPolicies;
+    private readonly FrozenDictionary<string, ILoadBalancingPolicy> _loadBalancingPolicies;
     private readonly RequestDelegate _next;
 
     public LoadBalancingMiddleware(
@@ -53,7 +54,7 @@ internal sealed class LoadBalancingMiddleware
             destination = currentPolicy.PickDestination(context, proxyFeature.Route.Cluster!, destinations);
         }
 
-        if (destination == null)
+        if (destination is null)
         {
             // We intentionally do not short circuit here, we allow for later middleware to decide how to handle this case.
             Log.NoAvailableDestinations(_logger, proxyFeature.Cluster.Config.ClusterId);

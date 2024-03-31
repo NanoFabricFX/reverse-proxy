@@ -1,7 +1,5 @@
 # Request and Response Transforms
 
-Introduced: preview2
-
 ## Introduction
 When proxying a request it's common to modify parts of the request or response to adapt to the destination server's requirements or to flow additional data such as the client's original IP address. This process is implemented via Transforms. Types of transforms are defined globally for the application and then individual routes supply the parameters to enable and configure those transforms. The original request objects are not modified by these transforms, only the proxy requests.
 
@@ -70,9 +68,8 @@ Here is an example of common transforms:
           { "RequestHeadersCopy": "true" },
           { "RequestHeaderOriginalHost": "true" },
           {
-            "X-Forwarded": "proto,host,for,prefix",
-            "Append": "true",
-            "Prefix": "X-Forwarded-"
+            "X-Forwarded": "Append",
+            "HeaderPrefix": "X-Forwarded-"
           }
         ]
       },
@@ -84,7 +81,7 @@ Here is an example of common transforms:
         "Transforms": [
           { "PathPattern": "/foo/{plugin}/bar/{**remainder}" },
           {
-            "QueryStringParameter": "q",
+            "QueryValueParameter": "q",
             "Append": "plugin"
           }
         ]
@@ -111,9 +108,9 @@ Developers that want to integrate their custom transforms with the `Transforms` 
 
 ### From Code
 
-Transforms can be added to routes programmatically by calling the [AddTransforms](xref:Microsoft.Extensions.DependencyInjection.ReverseProxyServiceCollectionExtensions) method.
+Transforms can be added to routes programmatically by calling the [AddTransforms](xref:Microsoft.Extensions.DependencyInjection.ReverseProxyServiceCollectionExtensions.AddTransforms*) method.
 
-`AddTransforms` can be called from `Startup.ConfigureServices` to provide a callback for configuring transforms. This callback is invoked each time a route is built or rebuilt and allows the developer to inspect the [RouteConfig](xref:Yarp.ReverseProxy.Configuration.RouteConfig) information and conditionally add transforms for it.
+`AddTransforms` can be called after `AddReverseProxy` to provide a callback for configuring transforms. This callback is invoked each time a route is built or rebuilt and allows the developer to inspect the [RouteConfig](xref:Yarp.ReverseProxy.Configuration.RouteConfig) information and conditionally add transforms for it.
 
 The `AddTransforms` callback provides a [TransformBuilderContext](xref:Yarp.ReverseProxy.Transforms.Builder.TransformBuilderContext) where transforms can be added or configured. Most transforms provide `TransformBuilderContext` extension methods to make them easier to add. These are extensions documented below with the individual transform descriptions.
 
@@ -388,7 +385,7 @@ This will change PUT requests to POST.
 
 ### RequestHeadersCopy
 
-**Sets whether incomming request headers are copied to the outbound request**
+**Sets whether incoming request headers are copied to the outbound request**
 
 | Key | Value | Default | Required |
 |-----|-------|---------|----------|
@@ -424,7 +421,7 @@ Config:
 routeConfig = routeConfig.WithTransformUseOriginalHostHeader(useOriginal: true);
 ```
 ```C#
-transformBuilderContext.UseOriginalHost = true;
+transformBuilderContext.AddOriginalHost(true);
 ```
 
 This specifies if the incoming request Host header should be copied to the proxy request. This setting is disabled by default and can be enabled by configuring the transform with a `true` value. Transforms that directly reference the `Host` header will override this transform.
@@ -459,6 +456,44 @@ MyHeader: MyValue
 ```
 
 This sets or appends the value for the named header. Set replaces any existing header. Append adds an additional header with the given value.
+Note: setting "" as a header value is not recommended and can cause an undefined behavior.
+
+### RequestHeaderRouteValue
+
+**Adds or replaces a header with a value from the route configuration**
+
+| Key | Value | Required |
+|-----|-------|----------|
+| RequestHeader | Name of a query string parameter | yes |
+| Set/Append | The name of a route value | yes |
+
+Config:
+```JSON
+{
+  "RequestHeaderRouteValue": "MyHeader",
+  "Set": "MyRouteKey"
+}
+```
+Code:
+```csharp
+routeConfig = routeConfig.WithTransformRequestHeaderRouteValue(headerName: "MyHeader", routeValueKey: "key", append: false);
+```
+```C#
+transformBuilderContext.AddRequestHeaderRouteValue(headerName: "MyHeader", routeValueKey: "key", append: false);
+```
+
+Example:
+
+| Step | Value               |
+|------|---------------------|
+| Route definition | `/api/{*remainder}` |
+| Request path | `/api/more/stuff`   |
+| Remainder value | `more/stuff`        |
+| RequestHeaderFromRoute | `foo`               |
+| Append | `remainder`         |
+| Result | `foo: more/stuff`   |
+
+This sets or appends the value for the named header with a value from the route configuration. Set replaces any existing header. Append adds an additional header with the given value.
 Note: setting "" as a header value is not recommended and can cause an undefined behavior.
 
 ### RequestHeaderRemove
@@ -560,11 +595,11 @@ routeConfig = routeConfig.WithTransformXForwarded(
   ForwardedTransformActions? xPrefix = null);
 ```
 ```C#
-transformBuilderContext.AddXForwarded(ForwardedTransformAction.Set);
-transformBuilderContext.AddXForwardedFor(headerName: "X-Forwarded-For", ForwardedTransformAction.Append);
-transformBuilderContext.AddXForwardedHost(headerName: "X-Forwarded-Host", ForwardedTransformAction.Append);
-transformBuilderContext.AddXForwardedProto(headerName: "X-Forwarded-Proto", ForwardedTransformAction.Off);
-transformBuilderContext.AddXForwardedPrefix(headerName: "X-Forwarded-Prefix", ForwardedTransformAction.Remove);
+transformBuilderContext.AddXForwarded(ForwardedTransformActions.Set);
+transformBuilderContext.AddXForwardedFor(headerName: "X-Forwarded-For", ForwardedTransformActions.Append);
+transformBuilderContext.AddXForwardedHost(headerName: "X-Forwarded-Host", ForwardedTransformActions.Append);
+transformBuilderContext.AddXForwardedProto(headerName: "X-Forwarded-Proto", ForwardedTransformActions.Off);
+transformBuilderContext.AddXForwardedPrefix(headerName: "X-Forwarded-Prefix", ForwardedTransformActions.Remove);
 ```
 
 Example:
@@ -947,19 +982,21 @@ Only header1 and header2 are copied from the proxy response.
 
 ### AddRequestTransform
 
-[AddRequestTransform](xref:Yarp.ReverseProxy.Transforms.TransformBuilderContextFuncExtensions) is a `TransformBuilderContext` extension method that defines a request transform as a `Func<RequestTransformContext, ValueTask>`. This allows creating a custom request transform without implementing a `RequestTransform` derived class.
+[AddRequestTransform](xref:Yarp.ReverseProxy.Transforms.TransformBuilderContextFuncExtensions.AddRequestTransform*) is a `TransformBuilderContext` extension method that defines a request transform as a `Func<RequestTransformContext, ValueTask>`. This allows creating a custom request transform without implementing a `RequestTransform` derived class.
 
 ### AddResponseTransform
 
-[AddResponseTransform](xref:Yarp.ReverseProxy.Transforms.TransformBuilderContextFuncExtensions) is a `TransformBuilderContext` extension method that defines a response transform as a `Func<ResponseTransformContext, ValueTask>`. This allows creating a custom response transform without implementing a `ResponseTransform` derived class.
+[AddResponseTransform](xref:Yarp.ReverseProxy.Transforms.TransformBuilderContextFuncExtensions.AddResponseTransform*) is a `TransformBuilderContext` extension method that defines a response transform as a `Func<ResponseTransformContext, ValueTask>`. This allows creating a custom response transform without implementing a `ResponseTransform` derived class.
 
 ### AddResponseTrailersTransform
 
-[AddResponseTrailersTransform](xref:Yarp.ReverseProxy.Transforms.TransformBuilderContextFuncExtensions) is a `TransformBuilderContext` extension method that defines a response trailers transform as a `Func<ResponseTrailersTransformContext, ValueTask>`. This allows creating a custom response trailers transform without implementing a `ResponseTrailersTransform` derived class.
+[AddResponseTrailersTransform](xref:Yarp.ReverseProxy.Transforms.TransformBuilderContextFuncExtensions.AddResponseTrailersTransform*) is a `TransformBuilderContext` extension method that defines a response trailers transform as a `Func<ResponseTrailersTransformContext, ValueTask>`. This allows creating a custom response trailers transform without implementing a `ResponseTrailersTransform` derived class.
 
 ### RequestTransform
 
 All request transforms must derive from the abstract base class [RequestTransform](xref:Yarp.ReverseProxy.Transforms.RequestTransform). These can freely modify the proxy `HttpRequestMessage`. Avoid reading or modifying the request body as this may disrupt the proxying flow. Consider also adding a parametrized extension method on `TransformBuilderContext` for discoverability and easy of use.
+
+A request transform may conditionally produce an immediate response such as for error conditions. This prevents any remaining transforms from running and the request from being proxied. This is indicated by setting the `HttpResponse.StatusCode` to a value other than 200, or calling `HttpResponse.StartAsync()`, or writing to the `HttpResponse.Body` or `BodyWriter`.
 
 ### ResponseTransform
 
@@ -968,6 +1005,70 @@ All response transforms must derive from the abstract base class [ResponseTransf
 ### ResponseTrailersTransform
 
 All response trailers transforms must derive from the abstract base class [ResponseTrailersTransform](xref:Yarp.ReverseProxy.Transforms.ResponseTrailersTransform). These can freely modify the client HttpResponse trailers. These run after the response body and should not attempt to modify the response headers or body. Consider also adding a parametrized extension method on `TransformBuilderContext` for discoverability and easy of use.
+
+### Request body transforms
+
+YARP does not provide any built in transforms for modifying the request body. However, the body can be modified in custom transforms.
+
+Be careful about which kinds of requests are modified, how much data gets buffered, enforcing timeouts, parsing untrusted input, and updating the body-related headers like `Content-Length`.
+
+The below example uses simple, inefficient buffering to transform requests. A more efficient implementation would wrap and replace `HttpContext.Request.Body` with a stream that performed the needed modifications as data was proxied from client to server. That would also require removing the Content-Length header since the final length would not be known in advance.
+
+This sample requires YARP 1.1, see https://github.com/microsoft/reverse-proxy/pull/1569.
+
+```C#
+.AddTransforms(context =>
+{
+    context.AddRequestTransform(async requestContext =>
+    {
+        using var reader = new StreamReader(requestContext.HttpContext.Request.Body);
+        // TODO: size limits, timeouts
+        var body = await reader.ReadToEndAsync();
+        if (!string.IsNullOrEmpty(body))
+        {
+            body = body.Replace("Alpha", "Charlie");
+            var bytes = Encoding.UTF8.GetBytes(body);
+            // Change Content-Length to match the modified body, or remove it.
+            requestContext.HttpContext.Request.Body = new MemoryStream(bytes);
+            // Request headers are copied before transforms are invoked, update any needed headers on the ProxyRequest
+            requestContext.ProxyRequest.Content.Headers.ContentLength = bytes.Length;
+        }
+    });
+});
+```
+
+### Response body transforms
+
+YARP does not provide any built in transforms for modifying the response body. However, the body can be modified in custom transforms.
+
+Be careful about which kinds of responses are modified, how much data gets buffered, enforcing timeouts, parsing untrusted input, and updating the body-related headers like `Content-Length`. You may need to decompress content before modifying it, as indicated by the Content-Encoding header, and afterwards re-compress it or remove the header.
+
+The below example uses simple, inefficient buffering to transform responses. A more efficient implementation would wrap the stream returned by `ReadAsStreamAsync()` with a stream that performed the needed modifications as data was proxied from client to server. That would also require removing the Content-Length header since the final length would not be known in advance.
+
+```C#
+.AddTransforms(context =>
+{
+    context.AddResponseTransform(async responseContext =>
+    {
+        var stream = await responseContext.ProxyResponse.Content.ReadAsStreamAsync();
+        using var reader = new StreamReader(stream);
+        // TODO: size limits, timeouts
+        var body = await reader.ReadToEndAsync();
+
+        if (!string.IsNullOrEmpty(body))
+        {
+            responseContext.SuppressResponseBody = true;
+
+            body = body.Replace("Bravo", "Charlie");
+            var bytes = Encoding.UTF8.GetBytes(body);
+            // Change Content-Length to match the modified body, or remove it.
+            responseContext.HttpContext.Response.ContentLength = bytes.Length;
+            // Response headers are copied before transforms are invoked, update any needed headers on the HttpContext.Response.
+            await responseContext.HttpContext.Response.Body.WriteAsync(bytes);
+        }
+    });
+});
+```
 
 ### ITransformProvider
 
@@ -985,17 +1086,26 @@ services.AddReverseProxy()
 ```C#
 internal class MyTransformProvider : ITransformProvider
 {
-    public void Validate(TransformValidationContext context)
+    public void ValidateRoute(TransformRouteValidationContext context)
     {
-        // Check all routes for a custom property and validate the associated
-        // transform data.
-        string value = null;
-        if (context.Route.Metadata?.TryGetValue("CustomMetadata", out value) ?? false)
+        // Check all routes for a custom property and validate the associated transform data.
+        if (context.Route.Metadata?.TryGetValue("CustomMetadata", out var value) ?? false)
         {
             if (string.IsNullOrEmpty(value))
             {
-                context.Errors.Add(new ArgumentException(
-                    "A non-empty CustomMetadata value is required")); 
+                context.Errors.Add(new ArgumentException("A non-empty CustomMetadata value is required"));
+            }
+        }
+    }
+
+    public void ValidateCluster(TransformClusterValidationContext context)
+    {
+        // Check all clusters for a custom property and validate the associated transform data.
+        if (context.Cluster.Metadata?.TryGetValue("CustomMetadata", out var value) ?? false)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                context.Errors.Add(new ArgumentException("A non-empty CustomMetadata value is required"));
             }
         }
     }
@@ -1003,19 +1113,17 @@ internal class MyTransformProvider : ITransformProvider
     public void Apply(TransformBuilderContext transformBuildContext)
     {
         // Check all routes for a custom property and add the associated transform.
-        string value = null;
-        if (transformBuildContext.Route.Metadata?.TryGetValue("CustomMetadata", out value)
-            ?? false)
+        if ((transformBuildContext.Route.Metadata?.TryGetValue("CustomMetadata", out var value) ?? false)
+            || (transformBuildContext.Cluster?.Metadata?.TryGetValue("CustomMetadata", out value) ?? false))
         {
             if (string.IsNullOrEmpty(value))
             {
-                throw new ArgumentException(
-                    "A non-empty CustomMetadata value is required");
+                throw new ArgumentException("A non-empty CustomMetadata value is required");
             }
 
             transformBuildContext.AddRequestTransform(transformContext =>
             {
-                transformContext.ProxyRequest.Headers.Add("CustomHeader", value);
+                transformContext.ProxyRequest.Options.Set(new HttpRequestOptionsKey<string>("CustomMetadata"), value);
                 return default;
             });
         }
@@ -1041,15 +1149,13 @@ services.AddReverseProxy()
 ```C#
 internal class MyTransformFactory : ITransformFactory
 {
-    public bool Validate(TransformValidationContext context,
-        IReadOnlyDictionary<string, string> transformValues)
+    public bool Validate(TransformRouteValidationContext context, IReadOnlyDictionary<string, string> transformValues)
     {
         if (transformValues.TryGetValue("CustomTransform", out var value))
         {
             if (string.IsNullOrEmpty(value))
             {
-                context.Errors.Add(new ArgumentException(
-                    "A non-empty CustomTransform value is required"));
+                context.Errors.Add(new ArgumentException("A non-empty CustomTransform value is required"));
             }
 
             return true; // Matched
@@ -1057,24 +1163,22 @@ internal class MyTransformFactory : ITransformFactory
         return false;
     }
 
-    public bool Build(TransformBuilderContext context,
-        IReadOnlyDictionary<string, string> transformValues)
+    public bool Build(TransformBuilderContext context, IReadOnlyDictionary<string, string> transformValues)
     {
         if (transformValues.TryGetValue("CustomTransform", out var value))
         {
             if (string.IsNullOrEmpty(value))
             {
-                throw new ArgumentException(
-                    "A non-empty CustomTransform value is required");
+                throw new ArgumentException("A non-empty CustomTransform value is required");
             }
 
             context.AddRequestTransform(transformContext =>
             {
-                transformContext.ProxyRequest.Headers.Add("CustomHeader", value);
+                transformContext.ProxyRequest.Options.Set(new HttpRequestOptionsKey<string>("CustomTransform"), value);
                 return default;
             });
 
-            return true; // Matched
+            return true;
         }
 
         return false;

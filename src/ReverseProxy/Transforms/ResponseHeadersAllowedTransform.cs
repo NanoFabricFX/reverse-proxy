@@ -2,13 +2,13 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Net.Http.Headers;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Primitives;
+using Yarp.ReverseProxy.Forwarder;
 
 namespace Yarp.ReverseProxy.Transforms;
 
@@ -25,12 +25,12 @@ public class ResponseHeadersAllowedTransform : ResponseTransform
         }
 
         AllowedHeaders = allowedHeaders;
-        AllowedHeadersSet = new HashSet<string>(allowedHeaders, StringComparer.OrdinalIgnoreCase);
+        AllowedHeadersSet = new HashSet<string>(allowedHeaders, StringComparer.OrdinalIgnoreCase).ToFrozenSet(StringComparer.OrdinalIgnoreCase);
     }
 
     internal string[] AllowedHeaders { get; }
 
-    private HashSet<string> AllowedHeadersSet { get; }
+    private FrozenSet<string> AllowedHeadersSet { get; }
 
     /// <inheritdoc/>
     public override ValueTask ApplyAsync(ResponseTransformContext context)
@@ -40,7 +40,7 @@ public class ResponseHeadersAllowedTransform : ResponseTransform
             throw new ArgumentNullException(nameof(context));
         }
 
-        if (context.ProxyResponse == null)
+        if (context.ProxyResponse is null)
         {
             return default;
         }
@@ -50,7 +50,7 @@ public class ResponseHeadersAllowedTransform : ResponseTransform
         // See https://github.com/microsoft/reverse-proxy/blob/51d797986b1fea03500a1ad173d13a1176fb5552/src/ReverseProxy/Forwarder/HttpTransformer.cs#L67-L77
         var responseHeaders = context.HttpContext.Response.Headers;
         CopyResponseHeaders(context.ProxyResponse.Headers, responseHeaders);
-        if (context.ProxyResponse.Content != null)
+        if (context.ProxyResponse.Content is not null)
         {
             CopyResponseHeaders(context.ProxyResponse.Content.Headers, responseHeaders);
         }
@@ -60,17 +60,18 @@ public class ResponseHeadersAllowedTransform : ResponseTransform
         return default;
     }
 
-    // See https://github.com/microsoft/reverse-proxy/blob/51d797986b1fea03500a1ad173d13a1176fb5552/src/ReverseProxy/Forwarder/HttpTransformer.cs#L102-L115
+    // See https://github.com/microsoft/reverse-proxy/blob/main/src/ReverseProxy/Forwarder/HttpTransformer.cs#:~:text=void-,CopyResponseHeaders
     private void CopyResponseHeaders(HttpHeaders source, IHeaderDictionary destination)
     {
-        foreach (var header in source)
+        foreach (var header in source.NonValidated)
         {
             var headerName = header.Key;
-            if (AllowedHeadersSet.Contains(headerName))
+            if (!AllowedHeadersSet.Contains(headerName))
             {
-                Debug.Assert(header.Value is string[]);
-                destination.Append(headerName, header.Value as string[] ?? header.Value.ToArray());
+                continue;
             }
+
+            destination[headerName] = RequestUtilities.Concat(destination[headerName], header.Value);
         }
     }
 }

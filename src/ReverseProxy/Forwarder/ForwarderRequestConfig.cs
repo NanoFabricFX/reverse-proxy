@@ -3,11 +3,13 @@
 
 using System;
 using System.Net.Http;
+using System.Threading;
+using Microsoft.AspNetCore.Http;
 
 namespace Yarp.ReverseProxy.Forwarder;
 
 /// <summary>
-/// Config for <see cref="IHttpForwarder.SendAsync"/>
+/// Config for <see cref="IHttpForwarder.SendAsync(HttpContext, string, HttpMessageInvoker, ForwarderRequestConfig, HttpTransformer, CancellationToken)"/>
 /// </summary>
 public sealed record ForwarderRequestConfig
 {
@@ -30,13 +32,11 @@ public sealed record ForwarderRequestConfig
     /// </summary>
     public Version? Version { get; init; }
 
-#if NET
     /// <summary>
     /// The policy applied to version selection, e.g. whether to prefer downgrades, upgrades or
     /// request an exact version. The default is `RequestVersionOrLower`.
     /// </summary>
     public HttpVersionPolicy? VersionPolicy { get; init; }
-#endif
 
     /// <summary>
     /// Allows to use write buffering when sending a response back to the client,
@@ -47,15 +47,13 @@ public sealed record ForwarderRequestConfig
 
     public bool Equals(ForwarderRequestConfig? other)
     {
-        if (other == null)
+        if (other is null)
         {
             return false;
         }
 
         return ActivityTimeout == other.ActivityTimeout
-#if NET
             && VersionPolicy == other.VersionPolicy
-#endif
             && Version == other.Version
             && AllowResponseBuffering == other.AllowResponseBuffering;
     }
@@ -63,9 +61,7 @@ public sealed record ForwarderRequestConfig
     public override int GetHashCode()
     {
         return HashCode.Combine(ActivityTimeout,
-#if NET
             VersionPolicy,
-#endif
             Version,
             AllowResponseBuffering);
     }

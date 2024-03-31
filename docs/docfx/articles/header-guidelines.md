@@ -9,7 +9,7 @@ Headers are a very important part of processing HTTP requests and each have thei
 
 ## YARP header filtering
 
-YARP automatically removes request and response headers that could impact its ability to forward a request correctly, or that may be used maliciously to bypass features of the proxy. A complete list can be found [here](https://github.com/microsoft/reverse-proxy/blob/v1.0.0-rc.1/src/ReverseProxy/Forwarder/RequestUtilities.cs#L62-L94), with some highlights described below.
+YARP automatically removes request and response headers that could impact its ability to forward a request correctly, or that may be used maliciously to bypass features of the proxy. A complete list can be found [here](https://github.com/microsoft/reverse-proxy/blob/main/src/ReverseProxy/Forwarder/RequestUtilities.cs#L71), with some highlights described below.
 
 ### Connection, KeepAlive, Close
 
@@ -35,9 +35,19 @@ These are headers used with proxies and are not considered appropriate to forwar
 
 This response header is used with HTTP/3 upgrades and only applies to the immediate connection.
 
-### TraceParent, Request-Id, TraceState, Baggage, Correlation-Context
+### Distributed tracing headers
 
-These headers relate to distributed tracing. They are automatically removed on .NET 6 or later so that the forwarding HttpClient can replace them with updated values.
+These headers include TraceParent, Request-Id, TraceState, Baggage, Correlation-Context.
+They are automatically removed based on `DistributedContextPropagator.Fields` so that the forwarding HttpClient can replace them with updated values.
+You can opt out of modifying these headers by setting `SocketsHttpHandler.ActivityHeadersPropagator` to `null`:
+```C#
+services.AddReverseProxy()
+    .ConfigureHttpClient((_, handler) => handler.ActivityHeadersPropagator = null);
+```
+
+### Strict-Transport-Security
+
+This header instructs clients to always use HTTPS, but there may be a conflict between values provided by the proxy and destination. To avoid confusion, the destination's value is not copied to the response if one was already added to the response by the proxy application.
 
 ## Other Header Guidelines
 
@@ -49,7 +59,7 @@ The Host header indicates which site on the server the request is intended for. 
 
 Because a separate connection is used to communicate with the destination, these request headers can be used to forward information about the original connection like the IP, scheme, port, client certificate, etc.. X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host, and X-Forwarded-Prefix are enabled by default. This information is subject to spoofing attacks so any existing headers on the request are removed and replaced by default. The destination app should be careful about how much trust it places in these values. See [transforms](transforms.md#defaults) for configuring these in the proxy. See the [ASP.NET docs](https://docs.microsoft.com/aspnet/core/host-and-deploy/proxy-load-balancer) for configuring the destination app to read these headers.
 
-### X-http-mehtod-override, x-http-method, x-method-override
+### X-http-method-override, x-http-method, x-method-override
 
 Some clients and servers limit which HTTP methods they allow (GET, POST, etc.). These request headers are sometimes used to work around those restrictions. These headers are proxied by default. If in the proxy you want to prevent these bypasses then use the [RequestHeaderRemove](transforms.md#requestheaderremove) transform.
 
@@ -68,4 +78,3 @@ This response header indicates what server technology was used to generate the r
 ### X-Powered-By
 
 This response header indicates what web framework was used to generate the response (ASP.NET, etc.). ASP.NET Core does not generate this header but IIS can. This header is proxied from the destination by default. Applications that want to remove it can use the [ResponseHeaderRemove](transforms.md#responseheaderremove) transform.
-

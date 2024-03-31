@@ -2,14 +2,14 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Net.Http.Headers;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
-using Microsoft.Extensions.Primitives;
+using Yarp.ReverseProxy.Forwarder;
 
 namespace Yarp.ReverseProxy.Transforms;
 
@@ -26,12 +26,12 @@ public class ResponseTrailersAllowedTransform : ResponseTrailersTransform
         }
 
         AllowedHeaders = allowedHeaders;
-        AllowedHeadersSet = new HashSet<string>(allowedHeaders, StringComparer.OrdinalIgnoreCase);
+        AllowedHeadersSet = new HashSet<string>(allowedHeaders, StringComparer.OrdinalIgnoreCase).ToFrozenSet(StringComparer.OrdinalIgnoreCase);
     }
 
     internal string[] AllowedHeaders { get; }
 
-    private HashSet<string> AllowedHeadersSet { get; }
+    private FrozenSet<string> AllowedHeadersSet { get; }
 
     /// <inheritdoc/>
     public override ValueTask ApplyAsync(ResponseTrailersTransformContext context)
@@ -41,7 +41,7 @@ public class ResponseTrailersAllowedTransform : ResponseTrailersTransform
             throw new ArgumentNullException(nameof(context));
         }
 
-        Debug.Assert(context.ProxyResponse != null);
+        Debug.Assert(context.ProxyResponse is not null);
         Debug.Assert(!context.HeadersCopied);
 
         // See https://github.com/microsoft/reverse-proxy/blob/51d797986b1fea03500a1ad173d13a1176fb5552/src/ReverseProxy/Forwarder/HttpTransformer.cs#L85-L99
@@ -49,7 +49,7 @@ public class ResponseTrailersAllowedTransform : ResponseTrailersTransform
         // because they lookup `IHttpResponseTrailersFeature` for every call. Here we do it just once instead.
         var responseTrailersFeature = context.HttpContext.Features.Get<IHttpResponseTrailersFeature>();
         var outgoingTrailers = responseTrailersFeature?.Trailers;
-        if (outgoingTrailers != null && !outgoingTrailers.IsReadOnly)
+        if (outgoingTrailers is not null && !outgoingTrailers.IsReadOnly)
         {
             // Note that trailers, if any, should already have been declared in Proxy's response
             CopyResponseHeaders(context.ProxyResponse.TrailingHeaders, outgoingTrailers);
@@ -60,17 +60,18 @@ public class ResponseTrailersAllowedTransform : ResponseTrailersTransform
         return default;
     }
 
-    // See https://github.com/microsoft/reverse-proxy/blob/51d797986b1fea03500a1ad173d13a1176fb5552/src/ReverseProxy/Forwarder/HttpTransformer.cs#L102-L115
+    // See https://github.com/microsoft/reverse-proxy/blob/main/src/ReverseProxy/Forwarder/HttpTransformer.cs#:~:text=void-,CopyResponseHeaders
     private void CopyResponseHeaders(HttpHeaders source, IHeaderDictionary destination)
     {
-        foreach (var header in source)
+        foreach (var header in source.NonValidated)
         {
             var headerName = header.Key;
-            if (AllowedHeadersSet.Contains(headerName))
+            if (!AllowedHeadersSet.Contains(headerName))
             {
-                Debug.Assert(header.Value is string[]);
-                destination.Append(headerName, header.Value as string[] ?? header.Value.ToArray());
+                continue;
             }
+
+            destination[headerName] = RequestUtilities.Concat(destination[headerName], header.Value);
         }
     }
 }

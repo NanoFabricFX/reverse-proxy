@@ -3,7 +3,6 @@
 
 using k8s;
 using k8s.Models;
-using Microsoft.Kubernetes;
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
@@ -199,6 +198,11 @@ public class NamespaceCache
     public IEnumerable<IngressData> GetIngresses()
     {
         return _ingressData.Values;
+    }
+
+    public bool IngressExists(V1Ingress ingress)
+    {
+        return _ingressData.ContainsKey(ingress.Name());
     }
 
     public bool TryLookup(NamespacedName key, out ReconcileData data)

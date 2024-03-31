@@ -85,17 +85,14 @@ public class ClusterConfigTests
                 SslProtocols = SslProtocols.Tls11 | SslProtocols.Tls12,
                 MaxConnectionsPerServer = 10,
                 DangerousAcceptAnyServerCertificate = true,
-#if NET
-                RequestHeaderEncoding = Encoding.UTF8.WebName
-#endif
+                RequestHeaderEncoding = Encoding.UTF8.WebName,
+                ResponseHeaderEncoding = Encoding.UTF8.WebName
             },
             HttpRequest = new ForwarderRequestConfig
             {
                 ActivityTimeout = TimeSpan.FromSeconds(60),
                 Version = Version.Parse("1.0"),
-#if NET
                 VersionPolicy = HttpVersionPolicy.RequestVersionExact,
-#endif
             },
             Metadata = new Dictionary<string, string> { { "cluster1-K1", "cluster1-V1" }, { "cluster1-K2", "cluster1-V2" } }
         };
@@ -165,17 +162,14 @@ public class ClusterConfigTests
                 SslProtocols = SslProtocols.Tls11 | SslProtocols.Tls12,
                 MaxConnectionsPerServer = 10,
                 DangerousAcceptAnyServerCertificate = true,
-#if NET
-                RequestHeaderEncoding = Encoding.UTF8.WebName
-#endif
+                RequestHeaderEncoding = Encoding.UTF8.WebName,
+                ResponseHeaderEncoding = Encoding.UTF8.WebName
             },
             HttpRequest = new ForwarderRequestConfig
             {
                 ActivityTimeout = TimeSpan.FromSeconds(60),
                 Version = Version.Parse("1.0"),
-#if NET
                 VersionPolicy = HttpVersionPolicy.RequestVersionExact,
-#endif
             },
             Metadata = new Dictionary<string, string> { { "cluster1-K1", "cluster1-V1" }, { "cluster1-K2", "cluster1-V2" } }
         };
@@ -261,9 +255,7 @@ public class ClusterConfigTests
             {
                 ActivityTimeout = TimeSpan.FromSeconds(60),
                 Version = Version.Parse("1.0"),
-#if NET
                 VersionPolicy = HttpVersionPolicy.RequestVersionExact,
-#endif
             },
             Metadata = new Dictionary<string, string> { { "cluster1-K1", "cluster1-V1" }, { "cluster1-K2", "cluster1-V2" } }
         };
@@ -360,9 +352,7 @@ public class ClusterConfigTests
             },
             HttpClient = new HttpClientConfig
             {
-#if NET
                 EnableMultipleHttp2Connections = true,
-#endif
                 SslProtocols = SslProtocols.Tls11 | SslProtocols.Tls12,
                 MaxConnectionsPerServer = 10,
                 DangerousAcceptAnyServerCertificate = true,
@@ -377,9 +367,7 @@ public class ClusterConfigTests
             {
                 ActivityTimeout = TimeSpan.FromSeconds(60),
                 Version = Version.Parse("1.0"),
-#if NET
                 VersionPolicy = HttpVersionPolicy.RequestVersionExact,
-#endif
             },
             Destinations = new Dictionary<string, DestinationConfig>(StringComparer.OrdinalIgnoreCase)
             {
@@ -405,21 +393,8 @@ public class ClusterConfigTests
             Metadata = new Dictionary<string, string> { { "cluster1-K1", "cluster1-V1" }, { "cluster1-K2", "cluster1-V2" } }
         };
 
-        var options = new JsonSerializerOptions
-        {
-            // Future 6.0 builds will contain the fix to these missing converters
-//#if !NET6_0_OR_GREATER
-            Converters =
-            {
-                // TimeSpans https://github.com/dotnet/runtime/issues/29932
-                new TimeSpanConverter(),
-                // Version https://github.com/dotnet/runtime/pull/41384
-                new VersionConverter()
-            }
-//#endif
-        };
-        var json = JsonSerializer.Serialize(cluster1, options);
-        var cluster2 = JsonSerializer.Deserialize<ClusterConfig>(json, options);
+        var json = JsonSerializer.Serialize(cluster1);
+        var cluster2 = JsonSerializer.Deserialize<ClusterConfig>(json);
 
         Assert.Equal(cluster1.Destinations, cluster2.Destinations);
         Assert.Equal(cluster1.HealthCheck.Active, cluster2.HealthCheck.Active);

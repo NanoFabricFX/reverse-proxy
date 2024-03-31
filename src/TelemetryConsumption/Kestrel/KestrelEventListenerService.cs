@@ -26,9 +26,32 @@ internal sealed class KestrelEventListenerService : EventListenerService<Kestrel
         ReadOnlyCollection<object> payload = eventData.Payload!;
 #pragma warning restore IDE0007 // Use implicit type
 
-#if NET
         switch (eventData.EventId)
         {
+            case 1:
+                Debug.Assert(eventData.EventName == "ConnectionStart" && payload.Count == 3);
+                {
+                    var connectionId = (string)payload[0];
+                    var localEndPoint = (string?)payload[1];
+                    var remoteEndPoint = (string?)payload[2];
+                    foreach (var consumer in consumers)
+                    {
+                        consumer.OnConnectionStart(eventData.TimeStamp, connectionId, localEndPoint, remoteEndPoint);
+                    }
+                }
+                break;
+
+            case 2:
+                Debug.Assert(eventData.EventName == "ConnectionStop" && payload.Count == 1);
+                {
+                    var connectionId = (string)payload[0];
+                    foreach (var consumer in consumers)
+                    {
+                        consumer.OnConnectionStop(eventData.TimeStamp, connectionId);
+                    }
+                }
+                break;
+
             case 3:
                 Debug.Assert(eventData.EventName == "RequestStart" && payload.Count == 5);
                 {
@@ -59,34 +82,6 @@ internal sealed class KestrelEventListenerService : EventListenerService<Kestrel
                 }
                 break;
         }
-#else
-        switch (eventData.EventId)
-        {
-            case 3:
-                Debug.Assert(eventData.EventName == "RequestStart" && payload.Count == 2);
-                {
-                    var connectionId = (string)payload[0];
-                    var requestId = (string)payload[1];
-                    foreach (var consumer in consumers)
-                    {
-                        consumer.OnRequestStart(eventData.TimeStamp, connectionId, requestId);
-                    }
-                }
-                break;
-
-            case 4:
-                Debug.Assert(eventData.EventName == "RequestStop" && payload.Count == 2);
-                {
-                    var connectionId = (string)payload[0];
-                    var requestId = (string)payload[1];
-                    foreach (var consumer in consumers)
-                    {
-                        consumer.OnRequestStop(eventData.TimeStamp, connectionId, requestId);
-                    }
-                }
-                break;
-        }
-#endif
     }
 
     protected override bool TrySaveMetric(KestrelMetrics metrics, string name, double value)

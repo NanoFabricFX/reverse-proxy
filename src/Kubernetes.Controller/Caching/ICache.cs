@@ -3,7 +3,6 @@
 
 using k8s;
 using k8s.Models;
-using Microsoft.Kubernetes;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using Yarp.Kubernetes.Controller.Services;
@@ -16,9 +15,11 @@ namespace Yarp.Kubernetes.Controller.Caching;
 /// </summary>
 public interface ICache
 {
-    void Update(WatchEventType eventType, V1Ingress ingress);
+    void Update(WatchEventType eventType, V1IngressClass ingressClass);
+    bool Update(WatchEventType eventType, V1Ingress ingress);
     ImmutableList<string> Update(WatchEventType eventType, V1Service service);
     ImmutableList<string> Update(WatchEventType eventType, V1Endpoints endpoints);
+    void Update(WatchEventType eventType, V1Secret secret);
     bool TryGetReconcileData(NamespacedName key, out ReconcileData data);
     void GetKeys(List<NamespacedName> keys);
     IEnumerable<IngressData> GetIngresses();

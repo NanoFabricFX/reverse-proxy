@@ -31,7 +31,7 @@ public class TelemetryConsumptionTests
         Manual
     }
 
-    private static void Register(IServiceCollection services, RegistrationApproach approach)
+    private static void RegisterTelemetryConsumers(IServiceCollection services, RegistrationApproach approach)
     {
         if (approach == RegistrationApproach.WithInstanceHelper)
         {
@@ -48,22 +48,42 @@ public class TelemetryConsumptionTests
             services.AddSingleton<TelemetryConsumer>();
             services.AddSingleton(services => (IForwarderTelemetryConsumer)services.GetRequiredService<TelemetryConsumer>());
             services.AddSingleton(services => (IKestrelTelemetryConsumer)services.GetRequiredService<TelemetryConsumer>());
-#if NET
             services.AddSingleton(services => (IHttpTelemetryConsumer)services.GetRequiredService<TelemetryConsumer>());
             services.AddSingleton(services => (INameResolutionTelemetryConsumer)services.GetRequiredService<TelemetryConsumer>());
             services.AddSingleton(services => (INetSecurityTelemetryConsumer)services.GetRequiredService<TelemetryConsumer>());
             services.AddSingleton(services => (ISocketsTelemetryConsumer)services.GetRequiredService<TelemetryConsumer>());
-#endif
 
             services.AddSingleton<SecondTelemetryConsumer>();
             services.AddSingleton(services => (IForwarderTelemetryConsumer)services.GetRequiredService<SecondTelemetryConsumer>());
             services.AddSingleton(services => (IKestrelTelemetryConsumer)services.GetRequiredService<SecondTelemetryConsumer>());
-#if NET
             services.AddSingleton(services => (IHttpTelemetryConsumer)services.GetRequiredService<SecondTelemetryConsumer>());
             services.AddSingleton(services => (INameResolutionTelemetryConsumer)services.GetRequiredService<SecondTelemetryConsumer>());
             services.AddSingleton(services => (INetSecurityTelemetryConsumer)services.GetRequiredService<SecondTelemetryConsumer>());
             services.AddSingleton(services => (ISocketsTelemetryConsumer)services.GetRequiredService<SecondTelemetryConsumer>());
-#endif
+
+            services.AddTelemetryListeners();
+        }
+    }
+
+    private static void RegisterMetricsConsumers(IServiceCollection services, RegistrationApproach approach)
+    {
+        if (approach == RegistrationApproach.WithInstanceHelper)
+        {
+            services.AddMetricsConsumer(new MetricsConsumer());
+        }
+        else if (approach == RegistrationApproach.WithGenericHelper)
+        {
+            services.AddMetricsConsumer<MetricsConsumer>();
+        }
+        else if (approach == RegistrationApproach.Manual)
+        {
+            services.AddSingleton<MetricsConsumer>();
+            services.AddSingleton(services => (IMetricsConsumer<ForwarderMetrics>)services.GetRequiredService<MetricsConsumer>());
+            services.AddSingleton(services => (IMetricsConsumer<KestrelMetrics>)services.GetRequiredService<MetricsConsumer>());
+            services.AddSingleton(services => (IMetricsConsumer<HttpMetrics>)services.GetRequiredService<MetricsConsumer>());
+            services.AddSingleton(services => (IMetricsConsumer<NameResolutionMetrics>)services.GetRequiredService<MetricsConsumer>());
+            services.AddSingleton(services => (IMetricsConsumer<NetSecurityMetrics>)services.GetRequiredService<MetricsConsumer>());
+            services.AddSingleton(services => (IMetricsConsumer<SocketsMetrics>)services.GetRequiredService<MetricsConsumer>());
 
             services.AddTelemetryListeners();
         }
@@ -85,13 +105,15 @@ public class TelemetryConsumptionTests
     [InlineData(RegistrationApproach.Manual)]
     public async Task TelemetryConsumptionWorks(RegistrationApproach registrationApproach)
     {
-        var test = new TestEnvironment(
-            async context => await context.Response.WriteAsync("Foo"),
-            proxyBuilder => Register(proxyBuilder.Services, registrationApproach),
-            proxyApp => { },
-            useHttpsOnDestination: true);
+        var useHttpsOnDestination = !OperatingSystem.IsMacOS();
 
-        test.ClusterId = Guid.NewGuid().ToString();
+        var test = new TestEnvironment(
+            async context => await context.Response.WriteAsync("Foo"))
+        {
+            UseHttpsOnDestination = useHttpsOnDestination,
+            ClusterId = Guid.NewGuid().ToString(),
+            ConfigureProxy = proxyBuilder => RegisterTelemetryConsumers(proxyBuilder.Services, registrationApproach),
+        };
 
         await test.Invoke(async uri =>
         {
@@ -101,32 +123,35 @@ public class TelemetryConsumptionTests
 
         var expected = new[]
         {
+            "OnConnectionStart-Kestrel",
             "OnRequestStart-Kestrel",
             "OnForwarderInvoke",
             "OnForwarderStart",
             "OnForwarderStage-SendAsyncStart",
-#if NET
             "OnRequestStart",
             "OnConnectStart",
             "OnConnectStop",
             "OnHandshakeStart",
             "OnHandshakeStop",
             "OnConnectionEstablished",
-#if NET6_0_OR_GREATER
             "OnRequestLeftQueue",
-#endif
             "OnRequestHeadersStart",
             "OnRequestHeadersStop",
             "OnResponseHeadersStart",
             "OnResponseHeadersStop",
             "OnRequestStop",
-#endif
             "OnForwarderStage-SendAsyncStop",
             "OnForwarderStage-ResponseContentTransferStart",
             "OnContentTransferred",
             "OnForwarderStop",
-            "OnRequestStop-Kestrel"
+            "OnRequestStop-Kestrel",
+            "OnConnectionStop-Kestrel",
         };
+
+        if (!useHttpsOnDestination)
+        {
+            expected = expected.Where(s => !s.Contains("OnHandshake", StringComparison.Ordinal)).ToArray();
+        }
 
         foreach (var consumerType in new[] { typeof(TelemetryConsumer), typeof(SecondTelemetryConsumer) })
         {
@@ -135,19 +160,31 @@ public class TelemetryConsumptionTests
         }
     }
 
-#if NET
     [Theory]
     [InlineData(RegistrationApproach.WithInstanceHelper)]
     [InlineData(RegistrationApproach.WithGenericHelper)]
     [InlineData(RegistrationApproach.Manual)]
     public async Task NonProxyTelemetryConsumptionWorks(RegistrationApproach registrationApproach)
     {
-        var test = new TestEnvironment(
-            async context => await context.Response.WriteAsync("Foo"),
-            proxyBuilder => Register(proxyBuilder.Services, registrationApproach),
-            proxyApp => { },
-            useHttpsOnDestination: true);
+        var redirected = false;
 
+        var test = new TestEnvironment(
+            async context =>
+            {
+                if (redirected)
+                {
+                    await context.Response.WriteAsync("Foo");
+                }
+                else
+                {
+                    context.Response.Redirect("/foo");
+                    redirected = true;
+                }
+            })
+        {
+            UseHttpsOnDestination = true,
+            ConfigureProxy = proxyBuilder => RegisterTelemetryConsumers(proxyBuilder.Services, registrationApproach),
+        };
         var path = $"/{Guid.NewGuid()}";
 
         await test.Invoke(async uri =>
@@ -162,14 +199,21 @@ public class TelemetryConsumptionTests
             "OnConnectStart",
             "OnConnectStop",
             "OnConnectionEstablished",
-#if NET6_0_OR_GREATER
             "OnRequestLeftQueue",
+            "OnRequestHeadersStart",
+            "OnRequestHeadersStop",
+            "OnResponseHeadersStart",
+            "OnResponseHeadersStop",
+#if NET8_0_OR_GREATER
+            "OnRedirect",
 #endif
             "OnRequestHeadersStart",
             "OnRequestHeadersStop",
             "OnResponseHeadersStart",
             "OnResponseHeadersStop",
-            "OnRequestStop"
+            "OnResponseContentStart",
+            "OnResponseContentStop",
+            "OnRequestStop",
         };
 
         foreach (var consumerType in new[] { typeof(TelemetryConsumer), typeof(SecondTelemetryConsumer) })
@@ -178,20 +222,16 @@ public class TelemetryConsumptionTests
             VerifyStages(expected, stages);
         }
     }
-#endif
 
     private class SecondTelemetryConsumer : TelemetryConsumer { }
 
     private class TelemetryConsumer :
         IForwarderTelemetryConsumer,
-        IKestrelTelemetryConsumer
-#if NET
-        ,
+        IKestrelTelemetryConsumer,
         IHttpTelemetryConsumer,
         INameResolutionTelemetryConsumer,
         INetSecurityTelemetryConsumer,
         ISocketsTelemetryConsumer
-#endif
     {
         public static readonly ConcurrentDictionary<(string, Type), List<(string Stage, DateTime Timestamp)>> PerClusterTelemetry = new();
         public static readonly ConcurrentDictionary<(string, Type), List<(string Stage, DateTime Timestamp)>> PerPathAndQueryTelemetry = new();
@@ -219,7 +259,6 @@ public class TelemetryConsumptionTests
             AddStage(nameof(OnForwarderInvoke), timestamp);
             PerClusterTelemetry.TryAdd((clusterId, GetType()), _stages.Value);
         }
-#if NET
         public void OnRequestStart(DateTime timestamp, string scheme, string host, int port, string pathAndQuery, int versionMajor, int versionMinor, HttpVersionPolicy versionPolicy)
         {
             AddStage(nameof(OnRequestStart), timestamp);
@@ -235,6 +274,8 @@ public class TelemetryConsumptionTests
         public void OnRequestContentStop(DateTime timestamp, long contentLength) => AddStage(nameof(OnRequestContentStop), timestamp);
         public void OnResponseHeadersStart(DateTime timestamp) => AddStage(nameof(OnResponseHeadersStart), timestamp);
         public void OnResponseHeadersStop(DateTime timestamp) => AddStage(nameof(OnResponseHeadersStop), timestamp);
+        public void OnResponseContentStart(DateTime timestamp) => AddStage(nameof(OnResponseContentStart), timestamp);
+        public void OnResponseContentStop(DateTime timestamp) => AddStage(nameof(OnResponseContentStop), timestamp);
         public void OnResolutionStart(DateTime timestamp, string hostNameOrAddress) => AddStage(nameof(OnResolutionStart), timestamp);
         public void OnResolutionStop(DateTime timestamp) => AddStage(nameof(OnResolutionStop), timestamp);
         public void OnResolutionFailed(DateTime timestamp) => AddStage(nameof(OnResolutionFailed), timestamp);
@@ -244,48 +285,37 @@ public class TelemetryConsumptionTests
         public void OnConnectStart(DateTime timestamp, string address) => AddStage(nameof(OnConnectStart), timestamp);
         public void OnConnectStop(DateTime timestamp) => AddStage(nameof(OnConnectStop), timestamp);
         public void OnConnectFailed(DateTime timestamp, SocketError error, string exceptionMessage) => AddStage(nameof(OnConnectFailed), timestamp);
+        public void OnConnectionStart(DateTime timestamp, string connectionId, string localEndPoint, string remoteEndPoint) => AddStage($"{nameof(OnConnectionStart)}-Kestrel", timestamp);
         public void OnRequestStart(DateTime timestamp, string connectionId, string requestId, string httpVersion, string path, string method) => AddStage($"{nameof(OnRequestStart)}-Kestrel", timestamp);
         public void OnRequestStop(DateTime timestamp, string connectionId, string requestId, string httpVersion, string path, string method) => AddStage($"{nameof(OnRequestStop)}-Kestrel", timestamp);
-#else
-        public void OnRequestStart(DateTime timestamp, string connectionId, string requestId) => AddStage($"{nameof(OnRequestStart)}-Kestrel", timestamp);
-        public void OnRequestStop(DateTime timestamp, string connectionId, string requestId) => AddStage($"{nameof(OnRequestStop)}-Kestrel", timestamp);
-#endif
+        public void OnConnectionStop(DateTime timestamp, string connectionId) => AddStage($"{nameof(OnConnectionStop)}-Kestrel", timestamp);
+        public void OnRedirect(DateTime timestamp, string redirectUri) => AddStage(nameof(OnRedirect), timestamp);
     }
 
-    [Fact]
-    public async Task MetricsConsumptionWorks()
+    [Theory]
+    [InlineData(RegistrationApproach.WithInstanceHelper)]
+    [InlineData(RegistrationApproach.WithGenericHelper)]
+    [InlineData(RegistrationApproach.Manual)]
+    public async Task MetricsConsumptionWorks(RegistrationApproach registrationApproach)
     {
         MetricsOptions.Interval = TimeSpan.FromMilliseconds(10);
 
-        var consumer = new MetricsConsumer();
-
         var test = new TestEnvironment(
-            async context =>
-            {
-                await context.Response.WriteAsync("Foo");
-            },
-            proxyBuilder =>
-            {
-                var services = proxyBuilder.Services;
-
-                services.AddSingleton<IMetricsConsumer<ForwarderMetrics>>(consumer);
-#if NET
-                services.AddSingleton<IMetricsConsumer<KestrelMetrics>>(consumer);
-                services.AddSingleton<IMetricsConsumer<HttpMetrics>>(consumer);
-                services.AddSingleton<IMetricsConsumer<SocketsMetrics>>(consumer);
-                services.AddSingleton<IMetricsConsumer<NetSecurityMetrics>>(consumer);
-                services.AddSingleton<IMetricsConsumer<NameResolutionMetrics>>(consumer);
-#endif
-
-                services.AddTelemetryListeners();
-            },
-            proxyApp => { },
-            useHttpsOnDestination: true);
+            async context => await context.Response.WriteAsync("Foo"))
+        {
+            UseHttpsOnDestination = true,
+            ConfigureProxy = proxyBuilder => RegisterMetricsConsumers(proxyBuilder.Services, registrationApproach),
+        };
+        var consumerBox = new MetricsConsumer.MetricsConsumerBox();
+        MetricsConsumer.ScopeInstance.Value = consumerBox;
+        MetricsConsumer consumer = null;
 
         await test.Invoke(async uri =>
         {
             var httpClient = new HttpClient();
             await httpClient.GetStringAsync(uri);
+
+            consumer = consumerBox.Instance;
 
             try
             {
@@ -295,26 +325,20 @@ public class TelemetryConsumptionTests
             catch { }
 
             await Task.WhenAll(
-                WaitAsync(() => consumer.ProxyMetrics.LastOrDefault()?.RequestsStarted > 0, nameof(ForwarderMetrics))
-#if NET
-                ,
+                WaitAsync(() => consumer.ProxyMetrics.LastOrDefault()?.RequestsStarted > 0, nameof(ForwarderMetrics)),
                 WaitAsync(() => consumer.KestrelMetrics.LastOrDefault()?.TotalConnections > 0, nameof(KestrelMetrics)),
                 WaitAsync(() => consumer.HttpMetrics.LastOrDefault()?.RequestsStarted > 0, nameof(HttpMetrics)),
                 WaitAsync(() => consumer.SocketsMetrics.LastOrDefault()?.OutgoingConnectionsEstablished > 0, nameof(SocketsMetrics)),
                 WaitAsync(() => consumer.NetSecurityMetrics.LastOrDefault()?.TotalTlsHandshakes > 0, nameof(NetSecurityMetrics)),
-                WaitAsync(() => consumer.NameResolutionMetrics.LastOrDefault()?.DnsLookupsRequested > 0, nameof(NameResolutionMetrics))
-#endif
-                );
+                WaitAsync(() => consumer.NameResolutionMetrics.LastOrDefault()?.DnsLookupsRequested > 0, nameof(NameResolutionMetrics)));
         });
 
         VerifyTimestamp(consumer.ProxyMetrics.Last().Timestamp);
-#if NET
         VerifyTimestamp(consumer.KestrelMetrics.Last().Timestamp);
         VerifyTimestamp(consumer.HttpMetrics.Last().Timestamp);
         VerifyTimestamp(consumer.SocketsMetrics.Last().Timestamp);
         VerifyTimestamp(consumer.NetSecurityMetrics.Last().Timestamp);
         VerifyTimestamp(consumer.NameResolutionMetrics.Last().Timestamp);
-#endif
 
         static void VerifyTimestamp(DateTime timestamp)
         {
@@ -337,32 +361,37 @@ public class TelemetryConsumptionTests
     }
 
     private sealed class MetricsConsumer :
-        IMetricsConsumer<ForwarderMetrics>
-#if NET
-        ,
+        IMetricsConsumer<ForwarderMetrics>,
         IMetricsConsumer<KestrelMetrics>,
         IMetricsConsumer<HttpMetrics>,
         IMetricsConsumer<NameResolutionMetrics>,
         IMetricsConsumer<NetSecurityMetrics>,
         IMetricsConsumer<SocketsMetrics>
-#endif
     {
-        public readonly ConcurrentQueue<ForwarderMetrics> ProxyMetrics = new ConcurrentQueue<ForwarderMetrics>();
-#if NET
+        public sealed class MetricsConsumerBox
+        {
+            public MetricsConsumer Instance;
+        }
+
+        public static readonly AsyncLocal<MetricsConsumerBox> ScopeInstance = new();
+
+        public readonly ConcurrentQueue<ForwarderMetrics> ProxyMetrics = new();
         public readonly ConcurrentQueue<KestrelMetrics> KestrelMetrics = new();
         public readonly ConcurrentQueue<HttpMetrics> HttpMetrics = new();
         public readonly ConcurrentQueue<SocketsMetrics> SocketsMetrics = new();
         public readonly ConcurrentQueue<NetSecurityMetrics> NetSecurityMetrics = new();
         public readonly ConcurrentQueue<NameResolutionMetrics> NameResolutionMetrics = new();
-#endif
+
+        public MetricsConsumer()
+        {
+            ScopeInstance.Value.Instance = this;
+        }
 
         public void OnMetrics(ForwarderMetrics previous, ForwarderMetrics current) => ProxyMetrics.Enqueue(current);
-#if NET
         public void OnMetrics(KestrelMetrics previous, KestrelMetrics current) => KestrelMetrics.Enqueue(current);
         public void OnMetrics(SocketsMetrics previous, SocketsMetrics current) => SocketsMetrics.Enqueue(current);
         public void OnMetrics(NetSecurityMetrics previous, NetSecurityMetrics current) => NetSecurityMetrics.Enqueue(current);
         public void OnMetrics(NameResolutionMetrics previous, NameResolutionMetrics current) => NameResolutionMetrics.Enqueue(current);
         public void OnMetrics(HttpMetrics previous, HttpMetrics current) => HttpMetrics.Enqueue(current);
-#endif
     }
 }

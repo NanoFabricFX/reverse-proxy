@@ -113,7 +113,6 @@ public class ForwarderHttpClientFactoryTests : TestAutoMockBase
         VerifyDefaultValues(handler, "WebProxy");
     }
 
-#if NET
     [Fact]
     public void CreateClient_ApplyRequestHeaderEncoding_Success()
     {
@@ -131,7 +130,24 @@ public class ForwarderHttpClientFactoryTests : TestAutoMockBase
         Assert.Equal(Encoding.Latin1, handler.RequestHeaderEncodingSelector(default, default));
         VerifyDefaultValues(handler, nameof(SocketsHttpHandler.RequestHeaderEncodingSelector));
     }
-#endif
+
+    [Fact]
+    public void CreateClient_ApplyResponseHeaderEncoding_Success()
+    {
+        var factory = new ForwarderHttpClientFactory(Mock<ILogger<ForwarderHttpClientFactory>>().Object);
+        var options = new HttpClientConfig
+        {
+            ResponseHeaderEncoding = Encoding.Latin1.WebName
+        };
+        var client = factory.CreateClient(new ForwarderHttpClientContext { NewConfig = options });
+
+        var handler = GetHandler(client);
+
+        Assert.NotNull(handler);
+        Assert.NotNull(handler.ResponseHeaderEncodingSelector);
+        Assert.Equal(Encoding.Latin1, handler.ResponseHeaderEncodingSelector(default, default));
+        VerifyDefaultValues(handler, nameof(SocketsHttpHandler.ResponseHeaderEncodingSelector));
+    }
 
     [Fact]
     public void CreateClient_OldClientExistsNoConfigChange_ReturnsOldInstance()
@@ -143,9 +159,7 @@ public class ForwarderHttpClientFactoryTests : TestAutoMockBase
             SslProtocols = SslProtocols.Tls11 | SslProtocols.Tls12,
             DangerousAcceptAnyServerCertificate = true,
             MaxConnectionsPerServer = 10,
-#if NET
             RequestHeaderEncoding = Encoding.Latin1.WebName,
-#endif
         };
         var newOptions = oldOptions with { }; // Clone
         var oldMetadata = new Dictionary<string, string> { { "key1", "value1" }, { "key2", "value2" } };
@@ -158,7 +172,6 @@ public class ForwarderHttpClientFactoryTests : TestAutoMockBase
         Assert.Same(oldClient, actualClient);
     }
 
-#if NET
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -172,7 +185,6 @@ public class ForwarderHttpClientFactoryTests : TestAutoMockBase
 
         Assert.Equal(enableMultipleHttp2Connections, handler.EnableMultipleHttp2Connections);
     }
-#endif
 
     [Theory]
     [MemberData(nameof(GetChangedHttpClientOptions))]
@@ -290,7 +302,6 @@ public class ForwarderHttpClientFactoryTests : TestAutoMockBase
                     MaxConnectionsPerServer = 20,
                 },
             },
-#if NET
             new object[] {
                 new HttpClientConfig
                 {
@@ -337,8 +348,42 @@ public class ForwarderHttpClientFactoryTests : TestAutoMockBase
                     MaxConnectionsPerServer = 10,
                     RequestHeaderEncoding = Encoding.Latin1.WebName,
                 },
+            },
+            new object[] {
+                new HttpClientConfig
+                {
+                    SslProtocols = SslProtocols.Tls11,
+                    DangerousAcceptAnyServerCertificate = true,
+                    MaxConnectionsPerServer = 10,
+                    RequestHeaderEncoding = Encoding.UTF8.WebName,
+                },
+                new HttpClientConfig
+                {
+                    SslProtocols = SslProtocols.Tls11,
+                    DangerousAcceptAnyServerCertificate = true,
+                    MaxConnectionsPerServer = 10,
+                    RequestHeaderEncoding = Encoding.UTF8.WebName,
+                    ResponseHeaderEncoding = Encoding.UTF8.WebName,
+                },
+            },
+            new object[] {
+                new HttpClientConfig
+                {
+                    SslProtocols = SslProtocols.Tls11,
+                    DangerousAcceptAnyServerCertificate = true,
+                    MaxConnectionsPerServer = 10,
+                    RequestHeaderEncoding = Encoding.UTF8.WebName,
+                    ResponseHeaderEncoding = Encoding.Latin1.WebName,
+                },
+                new HttpClientConfig
+                {
+                    SslProtocols = SslProtocols.Tls11,
+                    DangerousAcceptAnyServerCertificate = true,
+                    MaxConnectionsPerServer = 10,
+                    RequestHeaderEncoding = Encoding.UTF8.WebName,
+                    ResponseHeaderEncoding = Encoding.UTF8.WebName,
+                },
             }
-#endif
         };
     }
 

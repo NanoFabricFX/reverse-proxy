@@ -6,7 +6,6 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Yarp.ReverseProxy.Model;
-using Yarp.ReverseProxy.Utilities;
 
 namespace Yarp.ReverseProxy.Health;
 
@@ -17,11 +16,11 @@ internal sealed class DestinationHealthUpdater : IDestinationHealthUpdater, IDis
     private readonly ILogger<DestinationHealthUpdater> _logger;
 
     public DestinationHealthUpdater(
-        ITimerFactory timerFactory,
+        TimeProvider timeProvider,
         IClusterDestinationsUpdater clusterDestinationsUpdater,
         ILogger<DestinationHealthUpdater> logger)
     {
-        _scheduler = new EntityActionScheduler<(ClusterState Cluster, DestinationState Destination)>(d => Reactivate(d.Cluster, d.Destination), autoStart: true, runOnce: true, timerFactory);
+        _scheduler = new EntityActionScheduler<(ClusterState Cluster, DestinationState Destination)>(d => Reactivate(d.Cluster, d.Destination), autoStart: true, runOnce: true, timeProvider);
         _clusterUpdater = clusterDestinationsUpdater ?? throw new ArgumentNullException(nameof(clusterDestinationsUpdater));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
@@ -108,19 +107,19 @@ internal sealed class DestinationHealthUpdater : IDestinationHealthUpdater, IDis
     private static class Log
     {
         private static readonly Action<ILogger, string, TimeSpan, Exception?> _unhealthyDestinationIsScheduledForReactivation = LoggerMessage.Define<string, TimeSpan>(
-            LogLevel.Information,
+            LogLevel.Warning,
             EventIds.UnhealthyDestinationIsScheduledForReactivation,
-            "Destination `{destinationId}` marked as 'unhealthy` by the passive health check is scheduled for a reactivation in `{reactivationPeriod}`.");
+            "Destination `{destinationId}` marked as 'Unhealthy` by the passive health check is scheduled for a reactivation in `{reactivationPeriod}`.");
 
         private static readonly Action<ILogger, string, Exception?> _passiveDestinationHealthResetToUnkownState = LoggerMessage.Define<string>(
             LogLevel.Information,
             EventIds.PassiveDestinationHealthResetToUnkownState,
-            "Passive health state of the destination `{destinationId}` is reset to 'unknown`.");
+            "Passive health state of the destination `{destinationId}` is reset to 'Unknown`.");
 
         private static readonly Action<ILogger, string, string, Exception?> _activeDestinationHealthStateIsSetToUnhealthy = LoggerMessage.Define<string, string>(
             LogLevel.Warning,
             EventIds.ActiveDestinationHealthStateIsSetToUnhealthy,
-            "Active health state of destination `{destinationId}` on cluster `{clusterId}` is set to 'unhealthy'.");
+            "Active health state of destination `{destinationId}` on cluster `{clusterId}` is set to 'Unhealthy'.");
 
         private static readonly Action<ILogger, string, string, DestinationHealth, Exception?> _activeDestinationHealthStateIsSet = LoggerMessage.Define<string, string, DestinationHealth>(
             LogLevel.Information,

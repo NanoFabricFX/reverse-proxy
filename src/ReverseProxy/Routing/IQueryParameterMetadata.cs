@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-using System.Collections.Generic;
-
 namespace Yarp.ReverseProxy.Routing;
 
 /// <summary>
@@ -13,5 +11,5 @@ internal interface IQueryParameterMetadata
     /// <summary>
     /// One or more matchers to apply to the request query parameters.
     /// </summary>
-    IReadOnlyList<QueryParameterMatcher> Matchers { get; }
+    QueryParameterMatcher[] Matchers { get; }
 }
